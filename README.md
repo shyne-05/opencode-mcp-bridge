@@ -1,3 +1,3 @@
 # opencode-mcp-bridge
 
-Test push via push_files
+Public release 0.2.3
