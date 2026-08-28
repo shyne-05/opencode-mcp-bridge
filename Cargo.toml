@@ -1,11 +1,11 @@
 [package]
-name = "opencode-mcp-bridge"
-version = "0.2.3"
+name = "mcp-bridge"
+version = "0.3.0"
 edition = "2021"
-description = "Rust MCP bridge for OpenCode/Codex with host shell and Chrome CDP, per-user token/domain isolation"
+description = "Secure, configurable MCP gateway for local automation"
 license = "MIT"
 repository = "https://github.com/shyne-05/opencode-mcp-bridge"
-keywords = ["mcp", "opencode", "codex", "chatgpt", "claude"]
+keywords = ["mcp", "bridge", "automation"]
 readme = "README.md"
 
 [dependencies]
