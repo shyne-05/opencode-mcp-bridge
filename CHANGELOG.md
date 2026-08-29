@@ -21,7 +21,7 @@ All notable changes to MCP Bridge are documented here.
 
 - Modernized GitHub Actions runtimes and removed stale action inputs/warnings while keeping CI minimal and locked where appropriate.
 - Added the real-browser OAuth regression to CI and retained format, check, test, clippy, browser-helper syntax, release packaging, and RustSec audit gates.
-- Added a guarded native user-service deployment helper that safely fast-forwards a clean local `main`, builds the release, restarts the service, and verifies process identity, `/live`, `/ready`, build provenance, `dirty=false`, and browser-helper protocol compatibility.
+- Added a guarded native user-service deployment helper that safely fast-forwards a clean local `main`, snapshots the current package for rollback, builds the release, restarts the service, and verifies process identity, the single listener, `/live`, `/ready`, build provenance, `dirty=false`, and browser-helper protocol compatibility.
 - When deployment is initiated through MCP Bridge itself, restart work is handed to a transient user-systemd unit so the bridge cannot terminate the process that still needs to finish deployment verification.
 
 ## 0.5.1 — 2026-08-29

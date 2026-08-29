@@ -169,11 +169,8 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
-    assert!(names.contains(&"bridge_prompt"));
-    assert!(names.contains(&"bridge_read_file"));
-    assert!(!names.contains(&"shell"));
-    assert!(!names.contains(&"browser"));
-    assert!(!names.contains(&"desktop_open_app"));
-    assert!(!names.contains(&"audio_get_volume"));
-    assert!(!names.contains(&"audio_set_volume"));
+    assert_eq!(
+        names,
+        vec!["bridge_prompt", "bridge_read_file", "bridge_search"]
+    );
 }

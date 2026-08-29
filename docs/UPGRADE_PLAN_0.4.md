@@ -1,4 +1,6 @@
-# MCP Bridge 0.4 Upgrade Plan
+# MCP Bridge 0.4 Upgrade Plan (superseded)
+
+This historical plan is retained for context. The current 0.5.2 release is the source of truth for the public API and configuration. The active MCP surface is `bridge_prompt`, `bridge_read_file`, `bridge_search`, and the opt-in `shell` and `browser` tools; the removed session wrappers, agent wrapper, and `MCP_AGENT_*` settings must not be reintroduced.
 
 ## Objective
 
@@ -10,7 +12,7 @@ The upgrade must improve security and maintainability **without weakening the pe
 
 - Keep the public project and binary name `mcp-bridge`.
 - Preserve existing backend tools and their public names.
-- Preserve `shell`, `browser`, and `bridge_agent_prompt` as opt-in host tools.
+- Preserve `shell` and `browser` as opt-in host tools.
 - Preserve bearer token, named bearer token, OAuth, and URL-path token compatibility.
 - Preserve `BRIDGE_WORKDIR` confinement semantics for working directories.
 - Keep the running 0.3.0 process untouched until the 0.4.0 source passes all verification gates.
@@ -46,7 +48,7 @@ The upgrade must improve security and maintainability **without weakening the pe
 
 1. Add a `personal-desktop` profile optimized for the owner's workstation.
 2. Add a `server-secure` profile with host tools disabled by default.
-3. Split the host-tool master switch into independent shell/browser/agent switches while retaining the legacy master switch for compatibility.
+3. Split the host-tool master switch into independent shell/browser switches while retaining the legacy master switch for compatibility.
 4. Keep desktop variables available in `personal-desktop` mode without exposing bridge credentials.
 
 ## Phase 4 — Backend and file safety
@@ -126,13 +128,13 @@ The upgrade is complete only when the repository is modular, current-protocol ca
 
 ## Implementation status — completed 2026-08-29
 
-All planned phases have been implemented in the 0.4.0 source tree.
+All planned phases were implemented in the 0.4.0 source tree and the active release has since been cleaned up and hardened as 0.5.2.
 
 Verified outcomes:
 
 - official RMCP protocol layer with current and legacy negotiation
-- 10 tools in the trusted `personal-desktop` profile when host tools are enabled
-- 7 core tools in `server-secure` by default
+- 5 tools in the trusted `personal-desktop` profile when host tools are enabled
+- 3 core tools in `server-secure` by default
 - sanitized child environments retain required desktop session variables without exposing `MCP_*` credentials
 - bounded process output, process-group timeout termination, and tool concurrency limits
 - canonical backend read/search confinement with traversal and symlink escape rejection, plus persistent session ownership and real execution status
@@ -142,8 +144,8 @@ Verified outcomes:
 - current Playwright browser snapshot support
 - formatter, locked check, unit tests, clippy `-D warnings`, Node syntax validation, locked release build, and RustSec audit gates
 
-The existing 0.3.0 process is kept running only until the exact final 0.4.0 release artifact has passed all gates; the final deployment step atomically replaces it with the packaged binary/helper pair.
+The original 0.3.0 migration was completed only after the exact release artifact passed all gates; the current deployment helper applies the same discipline to 0.5.2 and keeps a rollback package outside the repository.
 
 ## Completion status
 
-Completion is gated on the final exact release artifact passing formatting, locked checks/builds, the expanded regression/restart suite, strict Clippy, Node/helper validation, RustSec audit, Docker/runtime smoke tests, live ChatGPT CIMD/PKCE/offline-access/refresh validation, and personal-desktop shell/browser/agent smoke tests.
+For current deployment and verification instructions, use the native user-service section in `README.md` and the controls in `SECURITY.md`.

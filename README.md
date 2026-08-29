@@ -355,7 +355,9 @@ When `deploy/mcp-bridge.service` is installed as the user service, use the guard
 bash scripts/deploy-user-service.sh
 ```
 
-The helper requires a clean working tree synchronized with `origin/main`, creates the release package, restarts `mcp-bridge.service`, verifies that systemd is running the newly built executable rather than a deleted/stale image, discovers the actual listening address, checks `/live` and `/ready`, and confirms the root provenance matches the deployed Git commit with `dirty=false` and browser helper protocol `mcp-browser-helper/2`.
+The helper requires a clean working tree synchronized with `origin/main`, captures the current executable and browser helper for rollback, creates the release package, restarts `mcp-bridge.service`, verifies that systemd is running the newly built executable rather than a deleted/stale image, confirms there is exactly one bridge listener, checks `/live` and `/ready`, and confirms the root provenance matches the deployed Git commit with `dirty=false` and browser helper protocol `mcp-browser-helper/2`. If restart or verification fails, it restores the previous package and brings the service back to liveness.
+
+When the command is run through the bridge's own `shell` tool, it first schedules a detached transient user-systemd worker and returns before the bridge restart. After the MCP connection is re-established, check `systemctl --user is-active mcp-bridge.service` and the root endpoint to confirm the handoff completed. No MCP schema refresh is needed because the public `shell` tool is unchanged.
 
 ## Docker
 
