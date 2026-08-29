@@ -85,7 +85,7 @@ pub(super) fn login_page(
         client_name = html_escape(&client.client_name),
         redirect_host = html_escape(&redirect_host),
     );
-    with_security_headers(
+    with_login_security_headers(
         (
             StatusCode::OK,
             [(
@@ -95,6 +95,7 @@ pub(super) fn login_page(
             body,
         )
             .into_response(),
+        request,
     )
 }
 
@@ -173,6 +174,32 @@ pub(super) fn oauth_redirect(location: String) -> Response {
 pub(super) fn with_security_headers(mut response: Response) -> Response {
     add_security_headers(&mut response);
     response
+}
+
+fn with_login_security_headers(
+    mut response: Response,
+    request: &OAuthAuthorizeRequest,
+) -> Response {
+    add_security_headers(&mut response);
+    if let Some(origin) = redirect_origin(request)
+        && let Ok(policy) = HeaderValue::try_from(format!(
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' {origin}; frame-ancestors 'none'; base-uri 'none'"
+        ))
+    {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, policy);
+    }
+    response
+}
+
+fn redirect_origin(request: &OAuthAuthorizeRequest) -> Option<String> {
+    let redirect_uri = request.redirect_uri.as_deref()?;
+    let url = Url::parse(redirect_uri).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
 }
 
 fn add_security_headers(response: &mut Response) {
