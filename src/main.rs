@@ -29,6 +29,27 @@ use tools::BridgeServer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+use url::Url;
+
+fn allowed_mcp_hosts(config: &Config) -> Vec<String> {
+    let mut hosts = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+    if !config.host.is_empty() {
+        hosts.push(config.host.clone());
+    }
+    if let Some(public_url) = config.oauth.public_url.as_deref()
+        && let Ok(url) = Url::parse(public_url)
+        && let Some(host) = url.host_str()
+    {
+        hosts.push(host.to_string());
+    }
+    hosts.sort_unstable();
+    hosts.dedup();
+    hosts
+}
 
 async fn index(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({
@@ -89,6 +110,7 @@ async fn main() {
 
     let cancellation_token = CancellationToken::new();
     let mcp_config = StreamableHttpServerConfig::default()
+        .with_allowed_hosts(allowed_mcp_hosts(&state.config))
         .with_json_response(true)
         .with_cancellation_token(cancellation_token.clone());
     let server_state = state.clone();
