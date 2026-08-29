@@ -106,6 +106,14 @@ async fn main() {
         std::process::exit(2);
     });
     oauth::spawn_cleanup_task(state.clone());
+    if state.config.tools.browser {
+        let browser_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = browser::warm_browser_worker(&browser_state).await {
+                warn!(%error, "failed to prewarm persistent browser worker");
+            }
+        });
+    }
 
     let cancellation_token = CancellationToken::new();
     let mcp_config = StreamableHttpServerConfig::default()

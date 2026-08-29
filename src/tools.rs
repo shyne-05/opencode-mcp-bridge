@@ -15,7 +15,7 @@ use rmcp::{
     service::RequestContext,
 };
 use serde_json::{Map, Value, json};
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, sync::Arc, time::Instant};
 
 #[derive(Clone)]
 pub struct BridgeServer {
@@ -117,28 +117,37 @@ impl BridgeServer {
                     .await
             }
             "shell" if self.state.config.tools.shell => {
-                let _permit = self
+                let queued_at = Instant::now();
+                let permit = self
                     .state
                     .shell_slots
                     .acquire()
                     .await
                     .map_err(|_| "shell concurrency limiter closed".to_string())?;
+                let queue_ms = queued_at.elapsed().as_secs_f64() * 1_000.0;
                 let directory = resolve_directory(
                     &self.state.config.workdir,
                     optional_string_arg(args, "directory"),
                 )?;
+                let started_at = Instant::now();
                 let output = run_bash(
                     required_string_arg(args, "command")?,
                     &directory,
                     &self.state.config.process,
                 )
                 .await;
+                let success = output.is_success();
+                tracing::info!(
+                    target: "mcp_bridge::latency",
+                    tool = "shell",
+                    queue_ms,
+                    elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
+                    success,
+                    "tool execution latency"
+                );
+                drop(permit);
                 let rendered = format!("dir:{}\n{}", directory.display(), output.render());
-                if output.is_success() {
-                    Ok(rendered)
-                } else {
-                    Err(rendered)
-                }
+                if success { Ok(rendered) } else { Err(rendered) }
             }
             "browser" if self.state.config.tools.browser => {
                 let action = optional_string_arg(args, "action").unwrap_or("tabs");
@@ -176,11 +185,19 @@ impl ServerHandler for BridgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let principal = principal_from_context(&context)?;
+        let tool_name = request.name.to_string();
         let args = request.arguments.unwrap_or_default();
-        let result = match self
-            .dispatch(&principal.0, request.name.as_ref(), &args)
-            .await
-        {
+        let started_at = Instant::now();
+        let dispatched = self.dispatch(&principal.0, &tool_name, &args).await;
+        let success = dispatched.is_ok();
+        tracing::info!(
+            target: "mcp_bridge::latency",
+            tool = %tool_name,
+            elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
+            success,
+            "mcp tool latency"
+        );
+        let result = match dispatched {
             Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
         };

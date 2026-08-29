@@ -25,9 +25,11 @@ jobs:
       - run: cargo check --locked --all-targets --all-features
       - run: cargo test --locked --all-features
       - run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global playwright@1.62.1
+      - run: NODE_PATH="$(npm root -g)" node tests/browser_worker.cjs
       - run: NODE_PATH="$(npm root -g)" node tests/oauth_browser.cjs
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: node --check scripts/browser.cjs
+      - run: node --check tests/browser_worker.cjs
       - run: bash -n scripts/package-release.sh
       - run: bash -n scripts/deploy-user-service.sh
       - run: scripts/package-release.sh

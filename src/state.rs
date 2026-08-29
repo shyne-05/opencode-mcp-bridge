@@ -10,7 +10,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{Mutex, OnceCell, RwLock, Semaphore};
+use tokio::{
+    io::BufReader,
+    process::{Child, ChildStdin, ChildStdout},
+    sync::{Mutex, OnceCell, RwLock, Semaphore},
+};
 
 const ACCESS_TOKEN_FINGERPRINT_PREFIX: &str = "sha256:";
 
@@ -63,6 +67,13 @@ pub struct OAuthRefreshToken {
 #[derive(Debug, Clone)]
 pub struct Principal(pub String);
 
+pub struct BrowserWorker {
+    pub(crate) child: Child,
+    pub(crate) stdin: ChildStdin,
+    pub(crate) stdout: BufReader<ChildStdout>,
+    pub(crate) next_id: u64,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
@@ -80,7 +91,7 @@ pub struct AppState {
     pub shell_slots: Arc<Semaphore>,
     pub browser_slots: Arc<Semaphore>,
     pub node_path: Arc<OnceCell<Option<String>>>,
-    pub browser_helper_check: Arc<OnceCell<Result<(), String>>>,
+    pub browser_worker: Arc<Mutex<Option<BrowserWorker>>>,
     durable: Arc<DurableStore>,
 }
 
@@ -88,8 +99,10 @@ impl AppState {
     pub fn new(config: Config) -> Result<Self, String> {
         let http = Client::builder()
             .timeout(Duration::from_secs(120))
-            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(32)
             .tcp_keepalive(Duration::from_secs(30))
+            .tcp_nodelay(true)
             .build()
             .map_err(|error| format!("failed to build HTTP client: {error}"))?;
         let shell_slots = Arc::new(Semaphore::new(config.process.shell_concurrency));
@@ -116,7 +129,7 @@ impl AppState {
             shell_slots,
             browser_slots,
             node_path: Arc::new(OnceCell::new()),
-            browser_helper_check: Arc::new(OnceCell::new()),
+            browser_worker: Default::default(),
             durable,
         })
     }
