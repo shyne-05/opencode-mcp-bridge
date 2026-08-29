@@ -4,17 +4,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Keep patch/security-compatible updates flowing automatically, but treat
-    # 0.x minor jumps as deliberate migrations because they may be breaking.
-    ignore:
-      - dependency-name: reqwest
+    # Routine version-update PRs stay patch-only. Minor/major dependency
+    # migrations are deliberate maintenance work with full regression testing.
+    # Dependabot security updates are not restricted by allow.update-types.
+    allow:
+      - dependency-type: direct
         update-types:
-          - version-update:semver-minor
-          - version-update:semver-major
-      - dependency-name: tower-http
-        update-types:
-          - version-update:semver-minor
-          - version-update:semver-major
+          - version-update:semver-patch
 
   - package-ecosystem: docker
     directory: /
