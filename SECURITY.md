@@ -15,7 +15,7 @@ When host tools are enabled, authenticated clients may execute host commands, in
 
 The primary security boundary is therefore **authentication + deployment trust**, followed by defense-in-depth controls that reduce accidental privilege/secret exposure.
 
-## 0.4 security controls
+## Security controls
 
 ### Authentication
 
@@ -24,7 +24,8 @@ The primary security boundary is therefore **authentication + deployment trust**
 - Modern MCP clients are resolved through OAuth Client ID Metadata Documents (CIMD); redirect URIs must exactly match verified metadata.
 - CIMD fetching is SSRF-hardened: HTTPS DNS hostnames only, private/reserved address rejection, DNS pinning for the request, proxy/redirect disabling, bounded response size, and short fetch timeouts.
 - Dynamic Client Registration is available only as a backwards-compatible fallback and is rate-limited/bounded.
-- Authorization codes and access tokens are process-local and bounded; refresh-token metadata and DCR registrations are durable across normal restarts. Refresh token values are never persisted in plaintext: the durable store uses SHA-256 fingerprints as keys and restrictive atomic state-file writes.
+- Authorization codes are short-lived, process-local, and bounded. Unexpired access-token metadata, refresh-token metadata, and DCR registrations are durable across normal restarts so an active OAuth authorization is not discarded merely because the bridge process restarts.
+- Access-token and refresh-token values are never persisted in plaintext. Durable token records use SHA-256 fingerprints as lookup keys and restrictive atomic state-file writes.
 - Refresh tokens rotate; a consumed refresh token cannot be reused.
 - OAuth login throttling combines source-IP, username-fingerprint, and global buckets. Forwarded IP headers are ignored unless `MCP_TRUST_PROXY=cloudflare` is explicitly enabled and the actual TCP peer is a loopback proxy.
 - Token/password comparisons avoid ordinary early-exit string comparison.
@@ -35,10 +36,12 @@ The primary security boundary is therefore **authentication + deployment trust**
 - MCP/HTTP request bodies are capped before Streamable HTTP/RMCP parsing and oversized requests return HTTP 413.
 - `/live` reports process liveness; `/ready` and `/health` report backend readiness and return HTTP 503 when unavailable.
 - The root endpoint exposes version/build/helper-protocol provenance to make mixed-version deployments observable.
+- The native user-service deployment helper requires a clean `main`, safely fast-forwards it to `origin/main`, builds the release package, restarts the service, and verifies process identity, health, readiness, build commit, `dirty=false`, and browser-helper protocol.
+- When deployment is initiated from the bridge process itself, the helper hands restart work to a transient user-systemd unit before restarting `mcp-bridge.service`, preventing the service from killing the process that still needs to complete deployment verification.
 
 ### Durable state
 
-By default durable state is stored under the user's XDG state directory (or `~/.local/state/mcp-bridge/state.json`). Use `MCP_STATE_FILE` to choose another path or `:memory:` for ephemeral tests. The store contains refresh-token fingerprints/metadata, DCR client registrations, and principal-to-backend-session ownership. It must be protected like authentication state and must never be committed.
+By default durable state is stored under the user's XDG state directory (or `~/.local/state/mcp-bridge/state.json`). Use `MCP_STATE_FILE` to choose another path or `:memory:` for ephemeral tests. The store contains OAuth access-token fingerprints/metadata, refresh-token fingerprints/metadata, DCR client registrations, and principal-to-backend-session ownership. It must be protected like authentication state and must never be committed.
 
 ### Child processes
 
@@ -71,6 +74,12 @@ These controls reduce accidental credential leakage and denial-of-service risk. 
 ### Personal workstation
 
 `MCP_PROFILE=personal-desktop` is appropriate when the bridge is intended to open applications, control audio, use the desktop bus/session, and run local development commands.
+
+For an installed `mcp-bridge.service`, prefer the guarded deployment helper:
+
+```bash
+bash scripts/deploy-user-service.sh
+```
 
 Recommended controls:
 
