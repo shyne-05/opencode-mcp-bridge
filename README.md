@@ -2,9 +2,9 @@
 
 MCP Bridge is a Rust gateway that connects MCP clients such as ChatGPT to a local agent backend and, when explicitly enabled, to the owner's desktop environment.
 
-Version 0.4 is designed around two goals:
+Version 0.5.0 is designed around two goals:
 
-1. **Personal desktop automation**: keep powerful local capabilities such as unrestricted shell access, browser control, application launching, audio control, and coding-agent workflows.
+1. **Personal desktop automation**: keep powerful local capabilities such as unrestricted shell access, browser control, and coding-agent workflows. Applications and audio remain accessible through the trusted shell when needed.
 2. **Safe boundaries**: do not leak bridge credentials into child processes, constrain filesystem access to a configured workspace, bound process output/concurrency, terminate timed-out process trees, and keep authentication/session ownership explicit.
 
 The MCP protocol layer uses the official Rust MCP SDK (`rmcp`) and currently negotiates every protocol revision supported by that SDK, including `2026-07-28` and legacy `2025-03-26` clients.
@@ -30,11 +30,8 @@ Optional host/desktop tools:
 | `shell` | Run unrestricted host Bash commands with a sanitized environment, bounded output, timeout, process-tree termination, and concurrency limiting | `MCP_ENABLE_SHELL=true` |
 | `bridge_agent_prompt` | Run the configured command-line coding agent | `MCP_ENABLE_AGENT=true` |
 | `browser` | Control a local Chrome/Chromium CDP session | `MCP_ENABLE_BROWSER=true` |
-| `desktop_open_app` | Launch Flatpak, desktop, or executable applications without shell-string interpolation | `MCP_ENABLE_DESKTOP=true` |
-| `audio_get_volume` | Read the default PipeWire/WirePlumber sink volume | `MCP_ENABLE_DESKTOP=true` |
-| `audio_set_volume` | Set the default sink volume and optionally unmute it | `MCP_ENABLE_DESKTOP=true` |
 
-`MCP_ENABLE_HOST_TOOLS=true` remains supported for 0.3 compatibility. In the `personal-desktop` profile it enables all optional host/desktop tool groups unless an individual switch overrides the default.
+`MCP_ENABLE_HOST_TOOLS=true` remains supported for 0.3 compatibility. In the `personal-desktop` profile it enables the optional shell, browser, and coding-agent groups unless an individual switch overrides the default.
 
 ## Requirements
 
@@ -45,8 +42,6 @@ Only install what your deployment uses:
 - A compatible backend service for the seven `bridge_*` tools
 - A command-line agent for `bridge_agent_prompt`
 - Google Chrome/Chromium, Node.js, and Playwright for `browser`
-- PipeWire/WirePlumber (`wpctl`) for native audio tools
-- Flatpak and/or `gtk-launch` for broad application launching support
 - `cloudflared` only when an external MCP client must reach the bridge through a tunnel
 
 The backend adapter expects these local HTTP endpoints:
@@ -104,7 +99,6 @@ or individual switches:
 export MCP_ENABLE_SHELL=true
 export MCP_ENABLE_BROWSER=true
 export MCP_ENABLE_AGENT=true
-export MCP_ENABLE_DESKTOP=true
 ```
 
 ### `server-secure`
@@ -117,9 +111,9 @@ export MCP_PROFILE=server-secure
 
 ## Child-process security model
 
-The bridge itself may contain authentication secrets such as `MCP_OAUTH_PASSWORD`. Shell, browser, agent, and desktop child processes **do not inherit the full bridge environment**.
+The bridge itself may contain authentication secrets such as `MCP_OAUTH_PASSWORD`. Shell, browser, and agent child processes **do not inherit the full bridge environment**.
 
-Instead, the bridge clears each child environment and restores only an allowlist of ordinary runtime variables. Personal-desktop mode includes the desktop/session variables needed to open applications and control audio.
+Instead, the bridge clears each child environment and restores only an allowlist of ordinary runtime variables. Personal-desktop mode includes the desktop/session variables needed for host-side workflows such as Wayland, DBus, PipeWire, and application control through `shell`.
 
 Additional non-secret variables can be explicitly allowed:
 
@@ -343,7 +337,6 @@ ingress:
 | `MCP_ENABLE_SHELL` | profile/master default | Enable `shell` |
 | `MCP_ENABLE_BROWSER` | profile/master default | Enable `browser` |
 | `MCP_ENABLE_AGENT` | profile/master default | Enable command-line agent |
-| `MCP_ENABLE_DESKTOP` | profile/master default | Enable app/audio helpers |
 | `MCP_AGENT_COMMAND` | unset | Codex/OpenCode executable path |
 | `MCP_AGENT_KIND` | inferred | `codex` or `opencode`; required if executable name is ambiguous |
 | `MCP_BROWSER_SCRIPT` | auto-detected | Browser helper path; protocol compatibility is checked before use |

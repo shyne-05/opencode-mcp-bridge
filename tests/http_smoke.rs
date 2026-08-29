@@ -149,4 +149,6 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
     assert!(!names.contains(&"shell"));
     assert!(!names.contains(&"browser"));
     assert!(!names.contains(&"desktop_open_app"));
+    assert!(!names.contains(&"audio_get_volume"));
+    assert!(!names.contains(&"audio_set_volume"));
 }

@@ -2,6 +2,12 @@
 
 All notable changes to MCP Bridge are documented here.
 
+## 0.5.0 — 2026-08-29
+
+### Removed
+
+- Removed the redundant native desktop and audio MCP wrappers. Trusted users can continue to launch applications and manage audio through the existing `shell` tool, while the MCP surface stays focused on backend, shell, browser, and coding-agent workflows.
+
 ## 0.4.0 — 2026-08-29
 
 ### Added

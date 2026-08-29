@@ -2,7 +2,6 @@ use crate::{
     backend::{Backend, PromptRequest, resolve_directory},
     browser::run_browser_action,
     config::AgentKind,
-    desktop,
     process::{run_bash, run_program},
     state::{AppState, Principal},
     util::{optional_string_arg, required_string_arg, trunc},
@@ -139,34 +138,6 @@ impl BridgeServer {
                 ToolAnnotations::new().read_only(false).open_world(true),
             ));
         }
-        if self.state.config.tools.desktop {
-            tools.extend([
-                tool(
-                    "desktop_open_app",
-                    "Open a desktop application safely without shell-string interpolation. Resolves Flatpak apps, desktop launchers, and executables.",
-                    json!({"app": {"type": "string"}}),
-                    &["app"],
-                    ToolAnnotations::new().read_only(false).open_world(false),
-                ),
-                tool(
-                    "audio_get_volume",
-                    "Read the current default audio sink volume and mute state using PipeWire/WirePlumber.",
-                    json!({}),
-                    &[],
-                    ToolAnnotations::new().read_only(true).open_world(false),
-                ),
-                tool(
-                    "audio_set_volume",
-                    "Set the default audio sink volume from 0 to 100 percent and optionally unmute it.",
-                    json!({
-                        "volume": {"type": "integer", "minimum": 0, "maximum": 100},
-                        "unmute": {"type": "boolean", "default": true}
-                    }),
-                    &["volume"],
-                    ToolAnnotations::new().read_only(false).idempotent(true).open_world(false),
-                ),
-            ]);
-        }
         tools
     }
 
@@ -280,22 +251,6 @@ impl BridgeServer {
             "browser" if self.state.config.tools.browser => {
                 let action = optional_string_arg(args, "action").unwrap_or("tabs");
                 run_browser_action(&self.state, action, args).await
-            }
-            "desktop_open_app" if self.state.config.tools.desktop => {
-                desktop::open_app(&self.state, required_string_arg(args, "app")?).await
-            }
-            "audio_get_volume" if self.state.config.tools.desktop => {
-                desktop::audio_status(&self.state).await
-            }
-            "audio_set_volume" if self.state.config.tools.desktop => {
-                let volume = args
-                    .get("volume")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| "volume is required and must be an integer".to_string())?;
-                let volume = u8::try_from(volume)
-                    .map_err(|_| "volume must be between 0 and 100".to_string())?;
-                let unmute = args.get("unmute").and_then(Value::as_bool).unwrap_or(true);
-                desktop::set_volume(&self.state, volume, unmute).await
             }
             _ => Err(format!("unknown or disabled tool: {name}")),
         }
