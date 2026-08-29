@@ -153,7 +153,9 @@ mod tests {
         let missing = missing.to_str().unwrap();
         let invalid = invalid.to_str().unwrap();
 
-        assert!(missing.contains(r#"resource_metadata="https://bridge.example/.well-known/oauth-protected-resource""#));
+        assert!(missing.contains(
+            r#"resource_metadata="https://bridge.example/.well-known/oauth-protected-resource""#
+        ));
         assert!(!missing.contains("invalid_token"));
         assert!(invalid.contains(r#"error="invalid_token""#));
     }
