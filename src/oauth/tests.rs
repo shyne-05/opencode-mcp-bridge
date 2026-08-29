@@ -6,6 +6,7 @@ use super::{
         validate_redirect_uri_syntax,
     },
     memory::{effective_client_ip_for, insert_bounded},
+    response::redirect_origin,
 };
 use crate::config::TrustProxy;
 use axum::http::{HeaderMap, HeaderValue, header};
@@ -62,6 +63,27 @@ fn validates_redirect_uri_security_and_legacy_chatgpt_callbacks() {
         "https://chatgpt.com/connector/oauth/abc-123"
     ));
     assert!(!legacy_chatgpt_redirect("https://evil.example/callback"));
+}
+
+#[test]
+fn oauth_login_csp_origin_serialization_handles_supported_redirects() {
+    assert_eq!(
+        redirect_origin("https://chatgpt.com/callback"),
+        Some("https://chatgpt.com".to_string())
+    );
+    assert_eq!(
+        redirect_origin("https://example.com:8443/callback"),
+        Some("https://example.com:8443".to_string())
+    );
+    assert_eq!(
+        redirect_origin("http://127.0.0.1:49152/callback"),
+        Some("http://127.0.0.1:49152".to_string())
+    );
+    assert_eq!(
+        redirect_origin("http://[::1]:49152/callback"),
+        Some("http://[::1]:49152".to_string())
+    );
+    assert_eq!(redirect_origin("com.example.app:/callback"), None);
 }
 
 #[test]
