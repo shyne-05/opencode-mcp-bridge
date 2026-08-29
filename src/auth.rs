@@ -62,9 +62,7 @@ async fn oauth_principal(state: &AppState, headers: &HeaderMap) -> Option<Princi
     let token = bearer_token(headers)?;
     let resource = state.config.oauth.public_resource()?;
     let tokens = state.oauth_access_tokens.read().await;
-    let access = tokens
-        .get(token)
-        .or_else(|| tokens.get(&access_token_lookup_key(token)))?;
+    let access = tokens.get(&access_token_lookup_key(token))?;
     (access.expires_at > now_seconds() && access.resource == resource)
         .then(|| Principal(access.principal.clone()))
 }
