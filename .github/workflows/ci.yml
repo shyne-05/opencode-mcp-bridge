@@ -32,6 +32,33 @@ jobs:
       - run: node --check tests/browser_worker.cjs
       - run: bash -n scripts/package-release.sh
       - run: bash -n scripts/deploy-user-service.sh
+      - run: bash -n scripts/bootstrap-oauth.sh
+      - name: Verify OAuth bootstrap helper
+        run: |
+          set -euo pipefail
+          test_home="$(mktemp -d)"
+          log_file="$(mktemp)"
+          HOME="$test_home" bash scripts/bootstrap-oauth.sh http://127.0.0.1:3000 >"$log_file"
+          env_file="$test_home/.config/mcp-bridge/env"
+          test "$(stat -c '%a' "$env_file")" = "600"
+          grep -qx 'MCP_OAUTH_USERNAME=admin' "$env_file"
+          grep -qx 'MCP_OAUTH_ALLOW_INSECURE_HTTP=true' "$env_file"
+          first_password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$env_file")"
+          test "${#first_password}" -ge 24
+          if grep -Fq "$first_password" "$log_file"; then
+            echo 'bootstrap password leaked to normal output' >&2
+            exit 1
+          fi
+          HOME="$test_home" bash scripts/bootstrap-oauth.sh http://127.0.0.1:3000 >"$log_file"
+          second_password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$env_file")"
+          test "$first_password" = "$second_password"
+          HOME="$test_home" bash scripts/bootstrap-oauth.sh --rotate http://127.0.0.1:3000 >"$log_file"
+          rotated_password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$env_file")"
+          test "$first_password" != "$rotated_password"
+          if grep -Fq "$rotated_password" "$log_file"; then
+            echo 'rotated password leaked to normal output' >&2
+            exit 1
+          fi
       - run: scripts/package-release.sh
 
   audit:
