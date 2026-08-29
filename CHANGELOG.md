@@ -7,6 +7,22 @@ All notable changes to MCP Bridge are documented here.
 ### Removed
 
 - Removed the redundant native application-launch MCP wrapper. Trusted personal-desktop deployments use the existing `shell` capability for application and audio control, reducing the exposed tool surface to the capabilities that are actually needed.
+- Removed the public async/session-management MCP wrappers (`bridge_prompt_async`, `bridge_session_messages`, `bridge_session_status`, and `bridge_list_sessions`). Backend session ownership remains an internal implementation detail of synchronous `bridge_prompt`.
+- Removed `bridge_agent_prompt` and the obsolete command-line-agent enablement, command, kind, timeout, and concurrency configuration. Coding CLIs remain reachable through the explicitly enabled trusted shell when needed.
+
+### Fixed
+
+- Hardened OAuth login CSP generation so form submission allows only `'self'` and the exact origin of an already validated registered redirect URI.
+- Expanded redirect validation coverage for HTTPS callbacks, explicit ports, localhost and IPv4/IPv6 loopback callbacks, dynamic loopback ports, and rejection of custom schemes, URL credentials, and fragments.
+- Preserved unexpired OAuth access authorization across normal bridge restarts by persisting only access-token fingerprints and metadata; plaintext access and refresh token values are never written to durable state.
+- Strengthened the real-browser OAuth regression to verify the login POST returns HTTP 302, the registered callback is reached with preserved state and an authorization code, and sensitive credential/token canaries are absent from captured output.
+
+### Operations
+
+- Modernized GitHub Actions runtimes and removed stale action inputs/warnings while keeping CI minimal and locked where appropriate.
+- Added the real-browser OAuth regression to CI and retained format, check, test, clippy, browser-helper syntax, release packaging, and RustSec audit gates.
+- Added a guarded native user-service deployment helper that safely fast-forwards a clean local `main`, builds the release, restarts the service, and verifies process identity, `/live`, `/ready`, build provenance, `dirty=false`, and browser-helper protocol compatibility.
+- When deployment is initiated through MCP Bridge itself, restart work is handed to a transient user-systemd unit so the bridge cannot terminate the process that still needs to finish deployment verification.
 
 ## 0.5.1 — 2026-08-29
 
