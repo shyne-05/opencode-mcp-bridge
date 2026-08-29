@@ -70,9 +70,8 @@ pub struct AppState {
     pub sessions: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
     pub oauth_codes: Arc<RwLock<HashMap<String, AuthorizationCode>>>,
     pub oauth_clients: Arc<RwLock<HashMap<String, OAuthClient>>>,
-    /// Fresh access tokens are keyed by plaintext only in memory. Persisted entries use a
-    /// `sha256:` fingerprint key so restarts preserve authorization without storing bearer
-    /// credentials that can be replayed from the state file.
+    /// Access tokens are keyed only by SHA-256 fingerprint so bearer credentials are not retained
+    /// as map keys in memory or written to durable state.
     pub oauth_access_tokens: Arc<RwLock<HashMap<String, OAuthAccessToken>>>,
     /// Refresh tokens are keyed by SHA-256 fingerprint, never by plaintext token.
     pub oauth_refresh_tokens: Arc<RwLock<HashMap<String, OAuthRefreshToken>>>,
@@ -142,13 +141,7 @@ impl AppState {
 
     pub async fn persist_durable(&self) -> Result<(), String> {
         let sessions = self.sessions.read().await.clone();
-        let access_tokens = self
-            .oauth_access_tokens
-            .read()
-            .await
-            .iter()
-            .map(|(key, token)| (durable_access_token_key(key), token.clone()))
-            .collect();
+        let access_tokens = self.oauth_access_tokens.read().await.clone();
         let refresh_tokens = self.oauth_refresh_tokens.read().await.clone();
         let dcr_clients = self
             .oauth_clients
@@ -175,14 +168,6 @@ pub(crate) fn access_token_lookup_key(token: &str) -> String {
         "{ACCESS_TOKEN_FINGERPRINT_PREFIX}{}",
         token_fingerprint(token)
     )
-}
-
-fn durable_access_token_key(key: &str) -> String {
-    if key.starts_with(ACCESS_TOKEN_FINGERPRINT_PREFIX) {
-        key.to_string()
-    } else {
-        access_token_lookup_key(key)
-    }
 }
 
 fn remember_bounded(owned: &mut VecDeque<String>, session_id: &str, limit: usize) {
