@@ -85,12 +85,8 @@ pub async fn require_mcp_auth(
             request.extensions_mut().insert(principal);
             next.run(request).await
         }
-        None => unauthorized_response_with_error(&state, presented_bearer),
+        None => unauthorized_response(&state, presented_bearer),
     }
-}
-
-pub fn unauthorized_response(state: &AppState) -> Response {
-    unauthorized_response_with_error(state, false)
 }
 
 fn bearer_challenge(metadata_url: Option<&str>, invalid_token: bool) -> HeaderValue {
@@ -106,7 +102,7 @@ fn bearer_challenge(metadata_url: Option<&str>, invalid_token: bool) -> HeaderVa
         .unwrap_or_else(|_| HeaderValue::from_static(r#"Bearer realm="mcp-bridge""#))
 }
 
-fn unauthorized_response_with_error(state: &AppState, invalid_token: bool) -> Response {
+fn unauthorized_response(state: &AppState, invalid_token: bool) -> Response {
     let metadata_url = state
         .config
         .oauth
