@@ -2,6 +2,21 @@
 
 All notable changes to MCP Bridge are documented here.
 
+## Unreleased
+
+### Performance
+
+- Added a persistent Node/Playwright browser worker for `navigate`, `snapshot`, `click`, `fill`, and `evaluate`, eliminating repeated Node startup, Playwright module loading, and CDP reconnection from the browser hot path.
+- Prewarm the persistent browser worker in the background when browser support is enabled so the first user action avoids the Node/Playwright cold start.
+- Tuned the shared Reqwest client for longer connection reuse, a larger idle pool, TCP keepalive, and TCP_NODELAY.
+- Added structured `mcp_bridge::latency` tracing for total MCP tool latency plus shell/browser queue and execution latency.
+- Prevent detached background applications from holding completed `shell` calls open indefinitely through inherited stdout/stderr pipes; captured output is preserved during a short drain grace and open streams are marked truncated.
+
+### Tests
+
+- Added a persistent browser-worker protocol regression that verifies handshake compatibility and multiple requests on one long-lived worker process.
+- Added a shell regression proving detached background children do not delay an otherwise completed MCP tool response.
+
 ## 0.5.2 — 2026-08-29
 
 ### Removed
