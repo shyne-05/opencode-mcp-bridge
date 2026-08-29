@@ -37,7 +37,7 @@ The primary security boundary is therefore **authentication + deployment trust**
 - `/live` reports process liveness; `/ready` and `/health` report backend readiness and return HTTP 503 when unavailable.
 - The root endpoint exposes version/build/helper-protocol provenance to make mixed-version deployments observable.
 - The native user-service deployment helper requires a clean `main`, safely fast-forwards it to `origin/main`, builds the release package, restarts the service, and verifies process identity, health, readiness, build commit, `dirty=false`, and browser-helper protocol.
-- When deployment is initiated from the bridge process itself, the helper hands restart work to a transient user-systemd unit before restarting `mcp-bridge.service`, preventing the service from killing the process that still needs to complete deployment verification.
+- The native deployment helper captures the running executable/helper outside the repository before packaging, and restores them if restart or verification fails. When deployment is initiated from the bridge process itself, it hands restart work to a transient user-systemd unit before restarting `mcp-bridge.service`, preventing the service from killing the process that still needs to complete deployment verification.
 
 ### Durable state
 
