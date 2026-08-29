@@ -7,10 +7,12 @@ MCP Bridge keeps the public MCP surface deliberately stable while optimizing the
 - RMCP Streamable HTTP remains the transport. The bridge returns JSON responses for ordinary tool calls and does not add a parallel proprietary WebSocket protocol.
 - The shared Reqwest client keeps backend/CDP HTTP connections warm, enables TCP_NODELAY, and maintains a larger idle connection pool.
 - Browser `navigate`, `snapshot`, `click`, `fill`, and `evaluate` calls use a persistent Node/Playwright worker. Playwright and the CDP browser connection are reused across calls instead of being loaded and reconnected for every action.
+- The browser worker is prewarmed in the background when browser support is enabled. Loading Node/Playwright is therefore moved out of the first user browser action; Chrome/CDP itself may still connect lazily if Chrome was not available at service startup.
 - Browser `tabs`, `new`, and `close` continue to use the Chrome DevTools HTTP endpoints directly because those operations are already lightweight.
 - A dead, timed-out, or protocol-desynchronized browser worker is discarded. The next browser action creates a clean worker instead of reusing uncertain state.
 - Browser helper CLI compatibility (`version` and one-shot action mode) remains available for packaging and mixed-version diagnostics.
 - Shell commands continue to start in isolated Bash processes with a sanitized environment. A persistent interactive shell is intentionally avoided because it would leak cwd/environment/process state between independent MCP calls.
+- After a shell exits, stdout/stderr receive only a short drain grace. A detached background application can no longer keep an MCP call open indefinitely merely because it inherited the shell pipes; any output captured before the grace expires is retained and the stream is marked truncated/open.
 - Structured latency events are emitted under the `mcp_bridge::latency` tracing target for total MCP tool latency and shell/browser queue/execution latency.
 
 ## Why the public tool schema stays unchanged
@@ -41,7 +43,7 @@ Useful measurements are:
 - shell/browser queue time
 - shell execution time
 - browser action time
-- browser worker cold-start frequency
+- browser worker cold-start/prewarm frequency
 - backend/model inference time observed outside bridge overhead
 
-Benchmark p50/p95/p99 rather than optimizing from individual calls. Browser actions after the first worker startup should show the largest improvement because Node startup, Playwright module loading, and CDP connection establishment are removed from the repeated hot path.
+Benchmark p50/p95/p99 rather than optimizing from individual calls. Warm browser actions should show the largest improvement because repeated Node startup, Playwright module loading, and CDP connection establishment are removed from the hot path.
