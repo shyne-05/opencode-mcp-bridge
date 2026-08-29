@@ -44,6 +44,7 @@ All notable changes to MCP Bridge are documented here.
 - Make `bridge_session_status` read the backend execution-status endpoint.
 - Report shell/agent non-zero exits and timeouts as MCP tool errors.
 - Make browser close of a missing target an MCP error and preserve structured evaluate results.
+- Make the browser-helper protocol probe dependency-free so release/CI packaging can verify compatibility before Playwright is installed.
 - Reject directories in `bridge_read_file` before contacting the backend.
 - Split liveness from backend readiness so failed dependencies are observable.
 - Replaced brittle hard-coded ChatGPT OAuth client/redirect matching with standards-based Client ID Metadata Document validation.

@@ -1,11 +1,12 @@
 const HELPER_PROTOCOL = "mcp-browser-helper/2";
-const { chromium } = require("playwright");
 
 const action = process.argv[2];
 if (action === "version") {
   console.log(HELPER_PROTOCOL);
   process.exit(0);
 }
+
+const { chromium } = require("playwright");
 
 // v0.4 convention: action, targetId, args...
 // Backward-compatible with v0.3: action, args... (no targetId slot).
