@@ -117,6 +117,7 @@ if grep -Fq "$SERVICE" "/proc/$$/cgroup" 2>/dev/null; then
   unit="mcp-bridge-deploy-$(date +%s)-$$"
   systemd-run --user \
     --unit="$unit" \
+    --on-active=1s \
     --collect \
     --quiet \
     bash "$ROOT/scripts/deploy-user-service.sh" \
