@@ -43,6 +43,10 @@ scan_revision() {
   local path
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
+    # `git grep <revision>` prefixes matching filenames with `<revision>:`.
+    # Strip only the exact revision prefix so allowlists and reports operate on
+    # repository-relative paths without weakening matching for unusual names.
+    path="${path#${revision}:}"
     if is_allowed_fixture "$path"; then
       continue
     fi
