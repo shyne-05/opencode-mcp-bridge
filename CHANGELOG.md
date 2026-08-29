@@ -2,6 +2,12 @@
 
 All notable changes to MCP Bridge are documented here.
 
+## 0.5.1 — 2026-08-29
+
+### Fixed
+
+- Restored the safe native application launcher for reliable Flatpak and desktop-launcher resolution while keeping the redundant audio wrappers removed.
+
 ## 0.5.0 — 2026-08-29
 
 ### Removed

@@ -2,6 +2,7 @@ use crate::{
     backend::{Backend, PromptRequest, resolve_directory},
     browser::run_browser_action,
     config::AgentKind,
+    desktop,
     process::{run_bash, run_program},
     state::{AppState, Principal},
     util::{optional_string_arg, required_string_arg, trunc},
@@ -138,6 +139,15 @@ impl BridgeServer {
                 ToolAnnotations::new().read_only(false).open_world(true),
             ));
         }
+        if self.state.config.tools.desktop {
+            tools.push(tool(
+                "desktop_open_app",
+                "Open a desktop application safely without shell-string interpolation. Resolves Flatpak apps, desktop launchers, and executables.",
+                json!({"app": {"type": "string"}}),
+                &["app"],
+                ToolAnnotations::new().read_only(false).open_world(false),
+            ));
+        }
         tools
     }
 
@@ -251,6 +261,9 @@ impl BridgeServer {
             "browser" if self.state.config.tools.browser => {
                 let action = optional_string_arg(args, "action").unwrap_or("tabs");
                 run_browser_action(&self.state, action, args).await
+            }
+            "desktop_open_app" if self.state.config.tools.desktop => {
+                desktop::open_app(&self.state, required_string_arg(args, "app")?).await
             }
             _ => Err(format!("unknown or disabled tool: {name}")),
         }

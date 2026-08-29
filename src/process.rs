@@ -252,6 +252,47 @@ async fn terminate_process_tree(child: &mut Child, _pid: Option<u32>) {
     let _ = child.kill().await;
 }
 
+pub async fn spawn_detached(
+    program: &str,
+    args: &[String],
+    directory: Option<&Path>,
+    config: &ProcessConfig,
+) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .envs(safe_child_environment(config))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    configure_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to start {program}: {error}"))?;
+    let pid = child.id();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    match child
+        .try_wait()
+        .map_err(|error| format!("failed to inspect {program}: {error}"))?
+    {
+        Some(status) if !status.success() => Err(format!("{program} exited with {status}")),
+        Some(_) => Ok(format!("started {program}")),
+        None => {
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+            Ok(format!(
+                "started {program} (pid {})",
+                pid.unwrap_or_default()
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{read_bounded, safe_child_environment};
