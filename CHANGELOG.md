@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to MCP Bridge are documented here.
+
+## 0.4.0 — 2026-08-29
+
+### Added
+
+- Official `rmcp`-based MCP transport and protocol negotiation, including MCP `2026-07-28` while retaining legacy client compatibility.
+- `personal-desktop` and `server-secure` runtime profiles.
+- Independent shell, browser, command-line agent, and desktop capability switches.
+- Native `desktop_open_app`, `audio_get_volume`, and `audio_set_volume` tools.
+- Per-tool concurrency limits and configurable process timeout/output limits.
+- Configurable backend-response and per-principal session-history limits.
+- Parser-based validation for OAuth public origins and browser navigation URLs.
+- OAuth state cleanup, bounded in-memory OAuth maps, failed-login throttling, refresh-token rotation, CIMD client discovery, and legacy DCR fallback.
+- Expanded unit/integration coverage for filesystem confinement, bounded backend/process I/O, session ownership/history, profiles, OAuth helpers, authentication, and browser behavior.
+- RustSec audit job in CI.
+- Durable state for hashed OAuth refresh tokens, DCR clients, and per-principal backend session ownership.
+- Explicit `MCP_TRUST_PROXY` handling with multi-dimensional OAuth throttling.
+- Codex and OpenCode command-line agent adapters via `MCP_AGENT_KIND`.
+- `/live` and dependency-aware `/ready` health endpoints.
+- Build provenance and browser-helper protocol reporting from `/`.
+- Release packaging script and user-systemd deployment example.
+
+### Changed
+
+- Refactored the former monolithic `main.rs` into focused configuration, authentication, OAuth, backend, process, browser, desktop, state, tools, and utility modules.
+- Child commands now start from a sanitized environment rather than inheriting the bridge process environment.
+- Personal-desktop mode explicitly preserves the desktop session variables needed for Wayland, DBus, PipeWire, and application launching.
+- Backend file reads are canonicalized and restricted to `BRIDGE_WORKDIR`.
+- Process output is bounded while streaming instead of being truncated only after the child exits.
+- Backend HTTP bodies are bounded while streaming instead of being fully buffered.
+- Unix child processes run in dedicated process groups so timeouts terminate the complete command tree.
+- HTTP dependencies use Rustls and RMCP disables unused default macro features to reduce the dependency surface.
+- Docker defaults to the `server-secure` profile and uses locked release builds.
+
+### Fixed
+
+- Reject unauthenticated mode on non-loopback listeners, preventing accidental remote unauthenticated host-tool exposure.
+- Constrain `bridge_search` to `BRIDGE_WORKDIR` and filter path/symlink escapes.
+- Enforce the 1 MiB request limit on the actual RMCP Streamable HTTP path.
+- Preserve refresh-token usability, DCR registrations, and backend-session ownership across bridge restarts.
+- Make `bridge_session_status` read the backend execution-status endpoint.
+- Report shell/agent non-zero exits and timeouts as MCP tool errors.
+- Make browser close of a missing target an MCP error and preserve structured evaluate results.
+- Reject directories in `bridge_read_file` before contacting the backend.
+- Split liveness from backend readiness so failed dependencies are observable.
+- Replaced brittle hard-coded ChatGPT OAuth client/redirect matching with standards-based Client ID Metadata Document validation.
+- Added SSRF-safe CIMD fetching and exact metadata-bound redirect URI checks, allowing the normal “paste MCP URL → authorize → return to client” flow.
+- Advertised and implemented Dynamic Client Registration fallback plus `offline_access` for long-lived ChatGPT connectivity.
+- Flatpak application resolution now rejects ambiguous partial matches instead of launching the first match.
+- Fixed browser snapshots on current Playwright by replacing the removed accessibility snapshot API with ARIA snapshots and a text fallback.
+- Fixed browser `navigate` so it navigates a selected/current tab rather than creating a new tab.
+- Fixed global Playwright resolution under the sanitized process environment by injecting only the discovered `NODE_PATH` into the browser helper.
+- Prevented the CDP browser helper from closing the user's Chrome instance when the helper exits.
+- Prevented malformed authorization-code exchange attempts from prematurely consuming otherwise valid authorization codes.
+- Prevented refresh-token replay by rotating and consuming refresh tokens.
+
+### Security
+
+- MCP/OAuth/tunnel secrets are no longer inherited by shell/browser/agent/desktop child processes.
+- OAuth login responses receive CSP, frame, referrer, content-type, and no-store protections.
+- Path traversal and symlink escape outside `BRIDGE_WORKDIR` are rejected.
+- Server-secure deployments expose only core backend tools unless host capabilities are explicitly enabled.

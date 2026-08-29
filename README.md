@@ -1,58 +1,65 @@
 # MCP Bridge
 
-MCP Bridge is a small Rust server that exposes a configurable agent backend through Streamable HTTP MCP. It can also provide optional host shell, command-line agent, and Chrome automation tools.
+MCP Bridge is a Rust gateway that connects MCP clients such as ChatGPT to a local agent backend and, when explicitly enabled, to the owner's desktop environment.
 
-The public tool names and configuration use the project name `mcp-bridge`. The backend adapter expects a local agent service that implements the HTTP endpoints described below. Authentication supports either a static bearer token or the built-in OAuth 2.1 flow for ChatGPT-style MCP connections.
+Version 0.4 is designed around two goals:
 
-## Features
+1. **Personal desktop automation**: keep powerful local capabilities such as unrestricted shell access, browser control, application launching, audio control, and coding-agent workflows.
+2. **Safe boundaries**: do not leak bridge credentials into child processes, constrain filesystem access to a configured workspace, bound process output/concurrency, terminate timed-out process trees, and keep authentication/session ownership explicit.
 
-Core tools are available after the backend is configured:
+The MCP protocol layer uses the official Rust MCP SDK (`rmcp`) and currently negotiates every protocol revision supported by that SDK, including `2026-07-28` and legacy `2025-03-26` clients.
 
-| Tool | Purpose | Requirement |
+## Tools
+
+Core backend tools are always available when the backend is configured:
+
+| Tool | Purpose |
+| --- | --- |
+| `bridge_prompt` | Send a prompt to the configured local agent backend and wait for the result |
+| `bridge_prompt_async` | Send a prompt without waiting for completion |
+| `bridge_session_messages` | Read messages from a bridge-owned backend session |
+| `bridge_session_status` | Read status from a bridge-owned backend session |
+| `bridge_list_sessions` | List backend sessions owned by the authenticated principal |
+| `bridge_read_file` | Read an existing file inside `BRIDGE_WORKDIR` through the backend |
+| `bridge_search` | Search the configured backend workspace |
+
+Optional host/desktop tools:
+
+| Tool | Purpose | Switch |
 | --- | --- | --- |
-| `bridge_prompt` | Send a prompt and wait for the response | Agent backend |
-| `bridge_prompt_async` | Send a prompt without waiting | Agent backend |
-| `bridge_session_messages` | Read a bridge-owned session | Agent backend |
-| `bridge_session_status` | Read a bridge-owned session status | Agent backend |
-| `bridge_list_sessions` | List sessions owned by the current token | Agent backend |
-| `bridge_read_file` | Read a file through the backend | Agent backend |
-| `bridge_search` | Search the backend workspace | Agent backend |
-| `shell` | Run a host `bash` command | `MCP_ENABLE_HOST_TOOLS=true` |
-| `bridge_agent_prompt` | Run the configured command-line agent | `MCP_ENABLE_HOST_TOOLS=true` and `MCP_AGENT_COMMAND` |
-| `browser` | Control a local Chrome debugging session | `MCP_ENABLE_HOST_TOOLS=true`, Chrome, Node.js, and Playwright |
+| `shell` | Run unrestricted host Bash commands with a sanitized environment, bounded output, timeout, process-tree termination, and concurrency limiting | `MCP_ENABLE_SHELL=true` |
+| `bridge_agent_prompt` | Run the configured command-line coding agent | `MCP_ENABLE_AGENT=true` |
+| `browser` | Control a local Chrome/Chromium CDP session | `MCP_ENABLE_BROWSER=true` |
+| `desktop_open_app` | Launch Flatpak, desktop, or executable applications without shell-string interpolation | `MCP_ENABLE_DESKTOP=true` |
+| `audio_get_volume` | Read the default PipeWire/WirePlumber sink volume | `MCP_ENABLE_DESKTOP=true` |
+| `audio_set_volume` | Set the default sink volume and optionally unmute it | `MCP_ENABLE_DESKTOP=true` |
 
-Host tools are hidden and disabled by default because they can access local files, processes, browser cookies, and desktop applications.
+`MCP_ENABLE_HOST_TOOLS=true` remains supported for 0.3 compatibility. In the `personal-desktop` profile it enables all optional host/desktop tool groups unless an individual switch overrides the default.
 
 ## Requirements
 
-Install only what you need:
+Only install what your deployment uses:
 
-- Rust 1.88 or newer: <https://rustup.rs>
-- Bash for the optional `shell` tool
-- A compatible local agent service for the seven `bridge_*` backend tools. It must expose `/global/health`, `/session`, `/session/{id}`, `/find`, and `/file/content` on the URL in `BRIDGE_BACKEND_URL`.
-- A command-line agent for `bridge_agent_prompt`. Set `MCP_AGENT_COMMAND` to its executable name or path. The command must accept `exec --json -C <directory> --skip-git-repo-check --sandbox <mode> <prompt>`.
+- Rust 1.88 or newer
+- Bash for `shell`
+- A compatible backend service for the seven `bridge_*` tools
+- A command-line agent for `bridge_agent_prompt`
+- Google Chrome/Chromium, Node.js, and Playwright for `browser`
+- PipeWire/WirePlumber (`wpctl`) for native audio tools
+- Flatpak and/or `gtk-launch` for broad application launching support
+- `cloudflared` only when an external MCP client must reach the bridge through a tunnel
 
-- Google Chrome or Chromium, Node.js, and Playwright for `browser`:
+The backend adapter expects these local HTTP endpoints:
 
-  ```bash
-  npm install --global playwright
-  ```
+- `/global/health`
+- `/session`
+- `/session/{id}`
+- `/session/{id}/message`
+- `/session/{id}/prompt_async`
+- `/find`
+- `/file/content`
 
-- `cloudflared` only when the bridge must be reachable from an external MCP client through a tunnel.
-
-Check the tools you installed:
-
-```bash
-rustc --version
-cargo --version
-node --version
-npm --version
-bash --version
-```
-
-## Install
-
-Clone and build the project:
+## Build
 
 ```bash
 git clone https://github.com/shyne-05/opencode-mcp-bridge.git mcp-bridge
@@ -60,45 +67,96 @@ cd mcp-bridge
 cargo build --release
 ```
 
-The binary is `target/release/mcp-bridge` on Linux and macOS, or `target/release/mcp-bridge.exe` on Windows.
+The binary is `target/release/mcp-bridge` on Linux/macOS.
 
-## Quick start
+## Quick start: personal desktop
 
-The following starts the bridge securely on the local machine. Keep this shell open while using the server:
+For a trusted personal workstation:
 
 ```bash
-export BRIDGE_WORKDIR="$PWD"
+export MCP_PROFILE=personal-desktop
+export BRIDGE_WORKDIR="$HOME"
 export BRIDGE_BACKEND_URL="http://127.0.0.1:4097"
 export MCP_TOKEN="$(openssl rand -hex 32)"
-./target/release/mcp-bridge
-```
-
-In another terminal, start your compatible backend service on `127.0.0.1:4097` using that service's documented command. The service must implement the endpoints listed in Requirements.
-
-The bridge itself defaults to `127.0.0.1:3000`. It refuses to start without `MCP_TOKEN`, `MCP_TOKENS`, or complete OAuth configuration, unless the explicit local-development override is set.
-
-## Enable host tools
-
-Only enable these tools when the MCP client and network are trusted:
-
-```bash
 export MCP_ENABLE_HOST_TOOLS=true
 ./target/release/mcp-bridge
 ```
 
-With host tools enabled:
+The default listener is `127.0.0.1:3000`.
 
-- `shell` runs `bash -c` on the host.
-- `bridge_agent_prompt` runs `MCP_AGENT_COMMAND` inside the requested sandbox mode.
-- `browser` can read and modify the Chrome session connected to CDP port `9222`.
+`BRIDGE_WORKDIR="$HOME"` is appropriate when the goal is to let the assistant work across projects in the user's home directory. Use a narrower project directory when broad access is unnecessary.
 
-The requested working directory must exist inside `BRIDGE_WORKDIR`. Start with the narrowest project directory possible.
+## Profiles
 
-## Chrome setup
+### `personal-desktop`
 
-Start Chrome with a separate profile and CDP enabled. Do not use a profile containing accounts or sensitive cookies unless the MCP client is fully trusted.
+Designed for the owner's workstation. Desktop session variables such as `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` may be passed to child processes when present.
 
-Linux:
+Host tools are still opt-in. Use either the legacy master switch:
+
+```bash
+export MCP_ENABLE_HOST_TOOLS=true
+```
+
+or individual switches:
+
+```bash
+export MCP_ENABLE_SHELL=true
+export MCP_ENABLE_BROWSER=true
+export MCP_ENABLE_AGENT=true
+export MCP_ENABLE_DESKTOP=true
+```
+
+### `server-secure`
+
+Designed for server/VPS use. Optional host tools default off even if the legacy desktop-oriented master switch is present; enable individual capabilities deliberately.
+
+```bash
+export MCP_PROFILE=server-secure
+```
+
+## Child-process security model
+
+The bridge itself may contain authentication secrets such as `MCP_OAUTH_PASSWORD`. Shell, browser, agent, and desktop child processes **do not inherit the full bridge environment**.
+
+Instead, the bridge clears each child environment and restores only an allowlist of ordinary runtime variables. Personal-desktop mode includes the desktop/session variables needed to open applications and control audio.
+
+Additional non-secret variables can be explicitly allowed:
+
+```bash
+export MCP_CHILD_ENV_ALLOW="MY_TOOL_CONFIG,ANOTHER_SAFE_VARIABLE"
+```
+
+Names that look like credentials (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `AUTH`, `COOKIE`, all `MCP_*`, and `CLOUDFLARE_*`) are rejected from this extension list.
+
+This does not make unrestricted shell harmless: shell commands still run with the operating-system permissions of the bridge user. The boundary prevents accidental credential inheritance; it is not a sandbox.
+
+## Process controls
+
+Default limits:
+
+| Variable | Default | Range / purpose |
+| --- | ---: | --- |
+| `MCP_SHELL_TIMEOUT_SECONDS` | `30` | Shell timeout, 1–600 seconds |
+| `MCP_AGENT_TIMEOUT_SECONDS` | `180` | Agent timeout, 1–1800 seconds |
+| `MCP_BROWSER_TIMEOUT_SECONDS` | `30` | Browser/helper timeout, 1–300 seconds |
+| `MCP_STDOUT_LIMIT_BYTES` | `1048576` | Captured stdout cap |
+| `MCP_STDERR_LIMIT_BYTES` | `262144` | Captured stderr cap |
+| `MCP_SHELL_CONCURRENCY` | `2` | Concurrent shell calls |
+| `MCP_AGENT_CONCURRENCY` | `2` | Concurrent agent calls |
+| `MCP_BROWSER_CONCURRENCY` | `1` | Concurrent browser calls |
+
+Output is bounded while it is being read, so a noisy process cannot allocate unbounded bridge memory. On Unix, timed-out commands are placed in their own process group and the complete group is terminated.
+
+## Browser setup
+
+Install Playwright:
+
+```bash
+npm install --global playwright
+```
+
+Start Chrome with a dedicated CDP profile:
 
 ```bash
 google-chrome \
@@ -106,78 +164,92 @@ google-chrome \
   --user-data-dir="$HOME/.config/mcp-bridge-chrome"
 ```
 
-macOS:
-
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir="$HOME/.config/mcp-bridge-chrome"
-```
-
-Windows PowerShell:
-
-```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=9222 `
-  --user-data-dir="$env:USERPROFILE\.config\mcp-bridge-chrome"
-```
-
-Verify CDP before calling `browser`:
+Verify CDP:
 
 ```bash
 curl --fail http://127.0.0.1:9222/json/list
 ```
 
-When running a built binary outside the repository directory, set the helper path explicitly:
+The browser helper supports:
+
+- `tabs`
+- `new`
+- `navigate`
+- `close`
+- `snapshot`
+- `click`
+- `fill`
+- `evaluate`
+
+`targetId` can be supplied for page-specific Playwright actions. If omitted, the most recent Playwright page is used. `snapshot` uses the current Playwright ARIA snapshot API and falls back to body text if unavailable. `evaluate` preserves structured JSON values, missing close targets are errors, and the Rust bridge verifies `mcp-browser-helper/2` before invoking the helper. The helper also understands the 0.3 argument layout to reduce mixed-version failure during an upgrade.
+
+Do not expose port `9222` publicly.
+
+## Command-line agent
+
+Set the executable/path and adapter type, not a shell command string:
 
 ```bash
-export MCP_BROWSER_SCRIPT="$PWD/scripts/browser.cjs"
+# Codex
+export MCP_AGENT_COMMAND=codex
+export MCP_AGENT_KIND=codex
+
+# or OpenCode
+export MCP_AGENT_COMMAND="$HOME/.opencode/bin/opencode"
+export MCP_AGENT_KIND=opencode
 ```
+
+Codex uses `exec --json -C ... --sandbox <mode>`. OpenCode uses `run --format json --dir ...`; `danger-full-access` maps to OpenCode `--auto`, while the other modes keep OpenCode's native permission system. Non-zero exits and timeouts are reported as MCP tool errors. If `MCP_AGENT_KIND` is omitted, the bridge can infer `codex` or `opencode` from an unambiguous executable basename.
 
 ## Authentication
 
-Use one token:
+### Static bearer token
 
 ```bash
 export MCP_TOKEN="$(openssl rand -hex 32)"
 ```
 
-Or use named tokens for multiple users:
-
-```bash
-export MCP_TOKENS="alice=$(openssl rand -hex 32),bob=$(openssl rand -hex 32)"
-```
-
-The preferred request format is a bearer header:
-
-```bash
-curl -sS -X POST http://127.0.0.1:3000/mcp \
-  -H "Authorization: Bearer $MCP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
-```
-
-Clients that cannot set a header may use the token path:
-
-```text
-http://127.0.0.1:3000/mcp/<token>
-```
-
-Do not put tokens in query strings. A path token can appear in proxy history, browser history, and access logs, so use the bearer header whenever possible.
-
-## Connect an MCP client
-
-For a local client, use:
+Connect to:
 
 ```text
 http://127.0.0.1:3000/mcp
 ```
 
-Configure the client to send `Authorization: Bearer <your-token>`. If the client only accepts a URL and cannot send headers, use `/mcp/<your-token>` and select no additional authentication in that client.
+and send:
 
-## ChatGPT OAuth setup
+```text
+Authorization: Bearer <token>
+```
 
-Use OAuth when the MCP client must open a browser login and connect through your public domain. Set `MCP_PUBLIC_URL` to the public HTTPS origin only; do not append `/mcp`:
+### Named tokens
+
+```bash
+export MCP_TOKENS="alice=$(openssl rand -hex 32),bob=$(openssl rand -hex 32)"
+```
+
+Backend sessions are tracked per authenticated principal.
+
+### URL-path token compatibility
+
+Clients that cannot send authorization headers may still use:
+
+```text
+http://127.0.0.1:3000/mcp/<token>
+```
+
+Prefer bearer headers. URL tokens can appear in proxy/access history.
+
+### Development-only unauthenticated mode
+
+```bash
+export MCP_ALLOW_UNAUTHENTICATED=true
+```
+
+The bridge enforces this as loopback-only: startup fails if unauthenticated mode is combined with a non-loopback `MCP_HOST`. Host tools may still be used for local development, but cannot be exposed unauthenticated over the network.
+
+## ChatGPT OAuth
+
+For an external ChatGPT MCP connection, expose the bridge through HTTPS and configure an OAuth origin:
 
 ```bash
 export MCP_PUBLIC_URL="https://your-domain.example.com"
@@ -187,39 +259,62 @@ export MCP_OAUTH_PASSWORD
 printf '\n'
 ```
 
-Start the bridge with these variables. `MCP_TOKEN` is optional when OAuth is configured, but you can keep it for local administration and testing:
+The OAuth password must be at least 12 characters.
 
-```bash
-./target/release/mcp-bridge
-```
-
-Verify OAuth discovery before adding the connection:
-
-```bash
-curl --fail https://your-domain.example.com/.well-known/oauth-protected-resource
-curl --fail https://your-domain.example.com/.well-known/oauth-authorization-server
-```
-
-The protected-resource metadata advertises `https://your-domain.example.com/mcp` as the OAuth resource. This must match the MCP URL you add to ChatGPT.
-
-Add this MCP server URL to ChatGPT:
+Connect ChatGPT to:
 
 ```text
 https://your-domain.example.com/mcp
 ```
 
-ChatGPT opens the OAuth login and handles the callback automatically. Do not use the ChatGPT callback URL as the MCP server URL. The configured OAuth username and password are the credentials entered on the bridge login page.
+The built-in OAuth flow provides:
 
-## Public access through Cloudflare Tunnel
+- authorization code flow
+- PKCE S256
+- resource binding
+- standards-based OAuth client discovery with Client ID Metadata Documents (CIMD)
+- Dynamic Client Registration (DCR) fallback for older MCP clients
+- exact redirect URI validation against verified client metadata
+- SSRF-hardened CIMD fetching: public HTTPS DNS only, pinned resolved addresses, no redirects/proxies, bounded size and timeout
+- high-entropy authorization/access/refresh tokens
+- one-time authorization codes
+- refresh-token rotation and `offline_access` scope support
+- expired-state cleanup
+- failed-login throttling
+- no-store OAuth responses and restrictive login-page security headers
 
-Keep the bridge bound to loopback and let the tunnel be the public edge:
+Configuration:
 
-```bash
-cloudflared tunnel create mcp-bridge
-cloudflared tunnel route dns mcp-bridge your-domain.example.com
-```
+| Variable | Default |
+| --- | ---: |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL` | `3600` seconds |
+| `MCP_OAUTH_REFRESH_TOKEN_TTL` | `2592000` seconds |
+| `MCP_OAUTH_CODE_TTL` | `300` seconds |
+| `MCP_OAUTH_MAX_FAILED_LOGINS` | `6` |
+| `MCP_OAUTH_LOGIN_WINDOW_SECONDS` | `60` seconds |
+| `MCP_OAUTH_MAX_CLIENTS` | `1024` |
+| `MCP_OAUTH_DCR_CLIENT_TTL` | `2592000` seconds |
+| `MCP_OAUTH_CLIENT_METADATA_TIMEOUT_SECONDS` | `10` seconds |
+| `MCP_OAUTH_CLIENT_METADATA_MAX_BYTES` | `65536` bytes |
+| `MCP_OAUTH_CLIENT_METADATA_CACHE_TTL` | `300` seconds |
 
-Create `~/.cloudflared/config.yml`:
+Current MCP clients can use CIMD without pre-registration: the bridge fetches the HTTPS `client_id` metadata document, verifies that its embedded `client_id` exactly matches the URL, and accepts only redirect URIs declared by that document. Older clients may use the advertised `/oauth/register` Dynamic Client Registration endpoint.
+
+OAuth authorization codes and short-lived access tokens remain in memory. Rotating refresh-token metadata, Dynamic Client Registration records, and bridge-owned backend-session ownership are stored in the durable state file so normal bridge restarts do not force a full OAuth login or orphan resumable backend sessions. Refresh token values are never written to disk; the durable store keys them by SHA-256 fingerprint and writes atomically with restrictive permissions on Unix.
+
+## Cloudflare Tunnel
+
+Keep the bridge on a private/local listener and publish only the bridge HTTP endpoint through the tunnel.
+
+Do **not** publish:
+
+- Chrome CDP port `9222`
+- backend port `4097`
+- an unauthenticated MCP endpoint
+
+When Cloudflare Tunnel terminates locally, forwarded client IP headers are **not trusted by default**. Set `MCP_TRUST_PROXY=cloudflare` only when the bridge receives traffic from a trusted loopback Cloudflare proxy. Otherwise throttling uses the actual TCP peer address, so a client cannot bypass limits by spoofing `CF-Connecting-IP`.
+
+Example ingress:
 
 ```yaml
 tunnel: <tunnel-id>
@@ -230,94 +325,115 @@ ingress:
   - service: http_status:404
 ```
 
-Then run the named tunnel:
-
-```bash
-cloudflared tunnel run mcp-bridge
-```
-
-Use HTTPS at the public domain and connect the MCP client to:
-
-```text
-https://your-domain.example.com/mcp
-```
-
-Do not publish port `9222`, the backend port, or an unauthenticated bridge endpoint.
-
-## Configuration
+## Configuration reference
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MCP_HOST` | `127.0.0.1` | Listen address. Use `0.0.0.0` only inside a protected container/network. |
-| `MCP_PORT` | `3000` | Listen port. |
-| `MCP_TOKEN` | unset | One bearer token. Required when OAuth is not configured unless local unauthenticated mode is explicitly enabled. |
-| `MCP_TOKENS` | unset | Comma-separated tokens, optionally named as `name=token`. Overrides `MCP_TOKEN` when present. |
-| `MCP_PUBLIC_URL` | unset | Canonical public HTTPS origin used by OAuth discovery. The OAuth resource is this origin plus `/mcp`. Required for OAuth. |
-| `MCP_OAUTH_USERNAME` | `user` | Username accepted by the built-in OAuth login page. |
-| `MCP_OAUTH_PASSWORD` | unset | Password for the built-in OAuth login page. Setting it with `MCP_PUBLIC_URL` enables OAuth. |
-| `MCP_OAUTH_ACCESS_TOKEN_TTL` | `3600` | Access-token lifetime in seconds. |
-| `MCP_OAUTH_REFRESH_TOKEN_TTL` | `2592000` | Refresh-token lifetime in seconds. |
-| `MCP_OAUTH_CODE_TTL` | `300` | Authorization-code lifetime in seconds. |
-| `MCP_OAUTH_ALLOW_INSECURE_HTTP` | `false` | Local-development-only HTTP OAuth override. Never enable it on a public domain. |
-| `MCP_ENABLE_HOST_TOOLS` | `false` | Exposes shell, browser, and command-line agent tools. |
-| `MCP_AGENT_COMMAND` | unset | Executable used by `bridge_agent_prompt`; required when that tool is called. |
-| `MCP_ALLOW_UNAUTHENTICATED` | `false` | Local-development escape hatch. Never use for a public service. |
-| `BRIDGE_BACKEND_URL` | `http://127.0.0.1:4097` | URL of the compatible agent backend. |
-| `BRIDGE_WORKDIR` | `.` | Allowed working-directory root for backend and host commands. |
-| `MCP_BROWSER_SCRIPT` | `scripts/browser.cjs` | Path to the tracked Playwright helper. |
-| `NODE_PATH` | automatic | Node module search path when Playwright is installed globally. |
+| `MCP_PROFILE` | `personal-desktop` | `personal-desktop` or `server-secure` |
+| `MCP_HOST` | `127.0.0.1` | Listener address |
+| `MCP_PORT` | `3000` | Listener port |
+| `BRIDGE_WORKDIR` | `.` | Canonical filesystem root for backend/file/working-directory access |
+| `BRIDGE_BACKEND_URL` | `http://127.0.0.1:4097` | Local backend origin |
+| `MCP_BACKEND_RESPONSE_LIMIT_BYTES` | `1048576` | Maximum backend response bytes buffered per request |
+| `MCP_MAX_SESSIONS_PER_PRINCIPAL` | `256` | Maximum bridge-owned backend session IDs retained per authenticated principal |
+| `MCP_TOKEN` | unset | Single bearer token |
+| `MCP_TOKENS` | unset | Named/comma-separated bearer tokens |
+| `MCP_ALLOW_UNAUTHENTICATED` | `false` | Development-only authentication bypass; enforced loopback-only |
+| `MCP_ENABLE_HOST_TOOLS` | `false` | Legacy personal-desktop master switch |
+| `MCP_ENABLE_SHELL` | profile/master default | Enable `shell` |
+| `MCP_ENABLE_BROWSER` | profile/master default | Enable `browser` |
+| `MCP_ENABLE_AGENT` | profile/master default | Enable command-line agent |
+| `MCP_ENABLE_DESKTOP` | profile/master default | Enable app/audio helpers |
+| `MCP_AGENT_COMMAND` | unset | Codex/OpenCode executable path |
+| `MCP_AGENT_KIND` | inferred | `codex` or `opencode`; required if executable name is ambiguous |
+| `MCP_BROWSER_SCRIPT` | auto-detected | Browser helper path; protocol compatibility is checked before use |
+| `MCP_CHILD_ENV_ALLOW` | unset | Extra comma-separated non-secret child environment names |
+| `MCP_STATE_FILE` | XDG/user state path | Durable refresh-token fingerprints, DCR clients, and session ownership; `:memory:` disables persistence |
+| `MCP_TRUST_PROXY` | `none` | `none` or `cloudflare`; forwarded IPs are trusted only from a loopback proxy |
+| `MCP_PUBLIC_URL` | unset | Public HTTPS OAuth origin |
+| `MCP_OAUTH_USERNAME` | `user` | Built-in OAuth login username |
+| `MCP_OAUTH_PASSWORD` | unset | Built-in OAuth login password; minimum 12 characters when OAuth is enabled |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL` | `3600` | OAuth access-token lifetime in seconds |
+| `MCP_OAUTH_REFRESH_TOKEN_TTL` | `2592000` | OAuth refresh-token lifetime in seconds |
+| `MCP_OAUTH_CODE_TTL` | `300` | OAuth authorization-code lifetime in seconds |
+| `MCP_OAUTH_MAX_FAILED_LOGINS` | `6` | Failed logins allowed per client bucket/window |
+| `MCP_OAUTH_LOGIN_WINDOW_SECONDS` | `60` | Failed-login rolling window |
+| `MCP_OAUTH_MAX_LOGIN_BUCKETS` | `1024` | Maximum in-memory failed-login client buckets |
+| `MCP_OAUTH_MAX_CODES` | `256` | Maximum in-memory authorization codes |
+| `MCP_OAUTH_MAX_CLIENTS` | `1024` | Maximum cached CIMD + legacy DCR client registrations |
+| `MCP_OAUTH_DCR_CLIENT_TTL` | `2592000` | Legacy DCR client lifetime in seconds |
+| `MCP_OAUTH_CLIENT_METADATA_TIMEOUT_SECONDS` | `10` | DNS/fetch timeout for CIMD metadata |
+| `MCP_OAUTH_CLIENT_METADATA_MAX_BYTES` | `65536` | Maximum CIMD response size |
+| `MCP_OAUTH_CLIENT_METADATA_CACHE_TTL` | `300` | Default/maximum CIMD cache lifetime when cache headers permit |
+| `MCP_OAUTH_MAX_ACCESS_TOKENS` | `1024` | Maximum in-memory OAuth access tokens |
+| `MCP_OAUTH_MAX_REFRESH_TOKENS` | `1024` | Maximum in-memory OAuth refresh tokens |
+| `MCP_SHELL_TIMEOUT_SECONDS` | `30` | Shell timeout, bounded to 1–600 seconds |
+| `MCP_AGENT_TIMEOUT_SECONDS` | `180` | Agent timeout, bounded to 1–1800 seconds |
+| `MCP_BROWSER_TIMEOUT_SECONDS` | `30` | Browser helper timeout, bounded to 1–300 seconds |
+| `MCP_STDOUT_LIMIT_BYTES` | `1048576` | Per-process captured stdout limit |
+| `MCP_STDERR_LIMIT_BYTES` | `262144` | Per-process captured stderr limit |
+| `MCP_SHELL_CONCURRENCY` | `2` | Maximum concurrent shell executions |
+| `MCP_AGENT_CONCURRENCY` | `2` | Maximum concurrent agent executions |
+| `MCP_BROWSER_CONCURRENCY` | `1` | Maximum concurrent browser helper operations |
 
-## Verify the installation
+MCP/HTTP request bodies are hard-limited to 1 MiB before RMCP parsing. Oversized requests return HTTP `413 Payload Too Large`.
 
-Check the bridge health and MCP handshake:
+## Health endpoints
 
-```bash
-curl -sS http://127.0.0.1:3000/health
+- `/live` — process liveness only, HTTP 200 while the bridge is running.
+- `/ready` — bridge + backend readiness, HTTP 503 when the backend is unavailable.
+- `/health` — compatibility alias for `/ready`.
 
-curl -sS -X POST http://127.0.0.1:3000/mcp \
-  -H "Authorization: Bearer $MCP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-
-curl -sS -X POST http://127.0.0.1:3000/mcp \
-  -H "Authorization: Bearer $MCP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-```
-
-The tools list contains seven tools by default and ten when `MCP_ENABLE_HOST_TOOLS=true`. A request without a valid token must return HTTP `401`. With OAuth enabled, the `401` response includes the protected-resource metadata location required for OAuth discovery.
-
-If the backend is unavailable, `/health` returns HTTP `503`; the bridge can still start, but backend tools will not work until the backend is running.
+The root `/` response includes package version, build commit/dirty state, and browser-helper protocol so deployments can detect version skew.
 
 ## Docker
 
-Build and run the bridge container:
-
 ```bash
-docker build -t mcp-bridge .
+docker build \
+  --build-arg BUILD_COMMIT="$(git rev-parse --short=12 HEAD)" \
+  --build-arg BUILD_DIRTY="$(test -z "$(git status --porcelain)" && echo false || echo true)" \
+  -t mcp-bridge .
 docker run --rm \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
   -e MCP_TOKEN="$(openssl rand -hex 32)" \
-  -e MCP_PUBLIC_URL="https://your-domain.example.com" \
-  -e MCP_OAUTH_USERNAME="bridge-user" \
-  -e MCP_OAUTH_PASSWORD="set-this-through-a-secret-manager" \
+  -e BRIDGE_BACKEND_URL=http://host.docker.internal:4097 \
   -e BRIDGE_WORKDIR=/work \
   -v "$PWD:/work:ro" \
+  -v mcp-bridge-state:/state \
   mcp-bridge
 ```
 
-The image includes Node.js and the Playwright package for the browser helper. Run the compatible backend and Chrome separately, then set `BRIDGE_BACKEND_URL` to a reachable backend URL. The command-line agent is not bundled; add your agent executable to a derived image and set `MCP_AGENT_COMMAND` if `bridge_agent_prompt` is required. Do not enable host tools in a container unless the container isolation, network, and mounted files are understood.
+The image runs as an unprivileged `bridge` user with `MCP_PROFILE=server-secure`, `/work` as the default confined work directory, and `/state/state.json` as durable state. Mount `/state` persistently if OAuth refresh/session continuity must survive container recreation. Desktop/CDP tools are primarily intended for native personal-workstation use; containerized desktop control needs explicit host integration and should not be enabled casually.
 
-## Security notes
+## Verification
 
-- Authentication is required by default and token comparison is constant-time.
-- The default listener is loopback-only and permissive CORS is not enabled.
-- Host tools are opt-in and intentionally powerful. Use a dedicated OS user, a separate browser profile, a narrow `BRIDGE_WORKDIR`, HTTPS, and a private network.
-- Session IDs are tracked per authenticated token for the lifetime of one bridge process. Restarting the bridge clears this in-memory ownership map.
-- OAuth uses a short-lived authorization code with PKCE `S256`, in-memory access/refresh tokens, and one configured username/password. Restarting the bridge invalidates OAuth codes and tokens. Use an external identity provider for multiple users or enterprise account management.
-- This project does not provide TLS termination or rate limiting. Put it behind a trusted HTTPS edge when it is not local-only.
-- Never commit `.env` files, tokens, cookies, private keys, or tunnel credentials.
+Local quality gates:
 
-## License
+```bash
+cargo fmt --all -- --check
+cargo check --locked --all-targets --all-features
+cargo test --locked --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+node --check scripts/browser.cjs
+bash -n scripts/package-release.sh
+scripts/package-release.sh
+cargo audit
+```
 
-MIT
+The repository CI runs the same Rust/Node checks plus the end-to-end MCP/OAuth integration tests included in `cargo test`, a release build, and a RustSec dependency audit.
+
+## Security model
+
+MCP Bridge is intentionally powerful. Enabling host tools gives an authenticated MCP client meaningful control over the host account.
+
+For a personal workstation:
+
+- use a strong token or OAuth password
+- expose only through authenticated HTTPS
+- keep backend/CDP ports private
+- use a dedicated Chrome automation profile when practical
+- set `BRIDGE_WORKDIR` no broader than necessary
+- review which host tool groups are enabled
+- never treat unrestricted shell as a sandbox
+
+See [SECURITY.md](SECURITY.md) for the detailed threat model and reporting process.

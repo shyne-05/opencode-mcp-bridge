@@ -1,22 +1,32 @@
 [package]
 name = "mcp-bridge"
-version = "0.3.0"
-edition = "2021"
-description = "Secure, configurable MCP gateway for local automation"
+version = "0.4.0"
+edition = "2024"
+description = "Secure, configurable MCP gateway for personal desktop and local agent automation"
 license = "MIT"
 repository = "https://github.com/shyne-05/opencode-mcp-bridge"
-keywords = ["mcp", "bridge", "automation"]
+keywords = ["mcp", "bridge", "automation", "desktop"]
 readme = "README.md"
+rust-version = "1.88"
 
 [dependencies]
-axum = "0.7"
-tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+base64 = "0.23"
+getrandom = "0.4"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rmcp = { version = "3.1.4", default-features = false, features = ["server", "transport-streamable-http-server"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
-tower-http = { version = "0.6", features = ["cors"] }
-tracing-subscriber = "0.3"
-urlencoding = "2"
-base64 = "0.22"
-getrandom = "0.3"
 sha2 = "0.10"
+subtle = "2.6"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tower-http = { version = "0.6", features = ["limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+urlencoding = "2"
+
+[dev-dependencies]
+tempfile = "3"

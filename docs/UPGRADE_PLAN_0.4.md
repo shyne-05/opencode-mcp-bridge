@@ -1,0 +1,152 @@
+# MCP Bridge 0.4 Upgrade Plan
+
+## Objective
+
+Turn MCP Bridge into a production-quality personal desktop automation gateway while preserving the capabilities that make it useful on the owner's workstation: unrestricted host shell access when explicitly enabled, desktop application control, browser automation, backend-agent sessions, and local file/project workflows.
+
+The upgrade must improve security and maintainability **without weakening the personal-desktop use case**.
+
+## Compatibility guarantees
+
+- Keep the public project and binary name `mcp-bridge`.
+- Preserve existing backend tools and their public names.
+- Preserve `shell`, `browser`, and `bridge_agent_prompt` as opt-in host tools.
+- Preserve bearer token, named bearer token, OAuth, and URL-path token compatibility.
+- Preserve `BRIDGE_WORKDIR` confinement semantics for working directories.
+- Keep the running 0.3.0 process untouched until the 0.4.0 source passes all verification gates.
+- Do not commit or print credentials.
+
+## Phase 1 — Architecture and protocol
+
+1. Replace the hand-maintained MCP JSON-RPC implementation with the official Rust MCP SDK (`rmcp`).
+2. Support current MCP protocol negotiation while remaining compatible with older clients supported by the SDK.
+3. Split the 1,600+ line monolith into focused modules:
+   - configuration
+   - authentication / OAuth
+   - shared application state
+   - backend client
+   - process execution
+   - browser bridge
+   - MCP tool definitions / dispatch
+   - HTTP server/bootstrap
+4. Keep HTTP authentication outside MCP tool logic and inject the authenticated principal through request extensions.
+
+## Phase 2 — Host execution hardening
+
+1. Keep shell access unrestricted when enabled; do not introduce a command allowlist.
+2. Stop child commands from inheriting MCP/OAuth/tunnel secrets.
+3. Build an explicit safe environment for child processes, including desktop-session variables required for Fedora/Wayland/DBus/PipeWire workflows.
+4. Allow explicitly configured extra environment variable names for advanced workflows.
+5. Put spawned commands in their own Unix process group and terminate the complete group on timeout.
+6. Bound captured stdout/stderr while the process is running instead of truncating only after completion.
+7. Add per-tool concurrency limits to prevent accidental process storms.
+8. Make execution timeout and output limits configurable with safe bounds.
+
+## Phase 3 — Capability profiles
+
+1. Add a `personal-desktop` profile optimized for the owner's workstation.
+2. Add a `server-secure` profile with host tools disabled by default.
+3. Split the host-tool master switch into independent shell/browser/agent switches while retaining the legacy master switch for compatibility.
+4. Keep desktop variables available in `personal-desktop` mode without exposing bridge credentials.
+
+## Phase 4 — Backend and file safety
+
+1. Centralize backend HTTP request/error handling.
+2. Validate backend response status before consuming bodies.
+3. Keep backend-owned session isolation per authenticated principal.
+4. Resolve backend file paths against `BRIDGE_WORKDIR` and reject traversal/symlink escapes before calling the backend.
+5. Normalize limits and error formatting across tools.
+
+## Phase 5 — OAuth hardening
+
+1. Keep PKCE S256, resource binding, redirect validation, high-entropy tokens, and constant-time comparisons.
+2. Add bounded in-memory OAuth state and periodic expired-token cleanup.
+3. Rotate refresh tokens rather than reusing the same refresh token indefinitely.
+4. Add login attempt throttling/backoff.
+5. Add security headers to OAuth HTML responses.
+6. Validate OAuth configuration at startup and reject obviously unsafe values.
+7. Implement standards-based Client ID Metadata Documents (CIMD), with SSRF-resistant remote metadata fetching and exact redirect binding.
+8. Keep Dynamic Client Registration (DCR) as a rate-limited backwards-compatible fallback.
+9. Advertise `offline_access` and verify the full ChatGPT-style authorization/refresh flow.
+
+## Phase 6 — Desktop ergonomics
+
+1. Keep generic `shell` for advanced workflows.
+2. Add narrow native desktop tools where they reduce command guessing and improve reliability, starting with:
+   - application launch
+   - audio volume / mute state
+3. Implement native helpers through existing Linux desktop utilities where available and return useful errors when unavailable.
+4. Keep native desktop tools optional and profile-aware.
+
+## Phase 7 — Tests and verification
+
+Add tests for at least:
+
+- constant-time authentication checks
+- bearer/path token authentication
+- OAuth redirect/client validation
+- PKCE verification
+- expired OAuth state cleanup
+- refresh-token rotation
+- login throttling
+- `BRIDGE_WORKDIR` traversal rejection
+- symlink escape rejection
+- secret environment stripping
+- allowed desktop environment inheritance
+- bounded process output
+- process timeout behavior
+- host-tool profile/feature selection
+- browser URL validation
+- backend session ownership
+- MCP tool discovery
+- authenticated MCP calls
+- unauthenticated MCP rejection
+
+Verification gates:
+
+1. `cargo fmt --all -- --check`
+2. `cargo check --locked --all-targets --all-features`
+3. `cargo test --locked --all-features`
+4. `cargo clippy --locked --all-targets --all-features -- -D warnings`
+5. `node --check scripts/browser.cjs`
+6. release build
+7. smoke test a temporary 0.4.0 instance on a different port
+8. verify OAuth metadata and MCP tool discovery
+9. verify Spotify/application launch and audio control compatibility without exposing secrets
+10. final dead-code/duplication/repository hygiene audit
+
+## Phase 8 — Cleanup and documentation
+
+1. Remove superseded protocol/auth/utility code.
+2. Remove duplicate helpers and unused dependencies.
+3. Keep `main.rs` bootstrap-only.
+4. Update README, SECURITY, Dockerfile, CI, and configuration reference.
+5. Ensure the working tree contains only intentional source/documentation changes and no generated secrets or runtime artifacts.
+
+## Definition of done
+
+The upgrade is complete only when the repository is modular, current-protocol capable, passes all automated checks, survives integration smoke tests, retains personal desktop automation behavior, and has no known duplicated/dead implementation left from 0.3.0.
+
+## Implementation status — completed 2026-08-29
+
+All planned phases have been implemented in the 0.4.0 source tree.
+
+Verified outcomes:
+
+- official RMCP protocol layer with current and legacy negotiation
+- 13 tools in the trusted `personal-desktop` profile when host tools are enabled
+- 7 core tools in `server-secure` by default
+- sanitized child environments retain required desktop session variables without exposing `MCP_*` credentials
+- bounded process output, process-group timeout termination, and tool concurrency limits
+- canonical backend read/search confinement with traversal and symlink escape rejection, plus persistent session ownership and real execution status
+- OAuth authorization-code + PKCE flow, CIMD client discovery, DCR fallback, access-token authentication, offline access, durable hashed refresh-token rotation, expired-state cleanup, bounded token/client state, and trusted-peer throttling
+- static bearer-token and URL-path-token compatibility
+- native Spotify/application launch and PipeWire audio helpers
+- current Playwright browser snapshot support
+- formatter, locked check, unit tests, clippy `-D warnings`, Node syntax validation, locked release build, and RustSec audit gates
+
+The existing 0.3.0 process is kept running only until the exact final 0.4.0 release artifact has passed all gates; the final deployment step atomically replaces it with the packaged binary/helper pair.
+
+## Completion status
+
+Completion is gated on the final exact release artifact passing formatting, locked checks/builds, the expanded regression/restart suite, strict Clippy, Node/helper validation, RustSec audit, Docker/runtime smoke tests, live ChatGPT CIMD/PKCE/offline-access/refresh validation, and personal-desktop shell/browser/agent smoke tests.

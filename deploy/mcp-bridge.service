@@ -1,0 +1,15 @@
+[Unit]
+Description=MCP Bridge personal desktop gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/opencode-mcp-bridge-rust
+EnvironmentFile=%h/.config/mcp-bridge/env
+ExecStart=%h/opencode-mcp-bridge-rust/target/release/mcp-bridge
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
