@@ -1,7 +1,13 @@
 use crate::{
-    process::{run_program, run_program_with_env},
-    state::AppState,
+    process::{run_program, safe_child_environment},
+    state::{AppState, BrowserWorker},
     util::{optional_string_arg, required_string_arg, trunc},
+};
+use serde_json::{Value, json};
+use std::{process::Stdio, time::Instant};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
 };
 use url::Url;
 
@@ -13,112 +19,131 @@ pub async fn run_browser_action(
     action: &str,
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<String, String> {
-    let _permit = state
+    let queued_at = Instant::now();
+    let permit = state
         .browser_slots
         .acquire()
         .await
         .map_err(|_| "browser concurrency limiter closed".to_string())?;
-    let text = match action {
-        "tabs" => list_tabs(state).await?,
-        "new" => {
-            let url = args
-                .get("url")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("about:blank");
-            safe_browser_url(url)?;
-            state
-                .http
-                .put(format!("{CDP}/json/new?{}", urlencoding::encode(url)))
-                .send()
-                .await
-                .map_err(|error| format!("browser request failed: {error}"))?
-                .text()
-                .await
-                .map_err(|error| format!("browser response failed: {error}"))?
-        }
-        "navigate" => {
-            let url = args
-                .get("url")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "url is required".to_string())?;
-            safe_browser_url(url)?;
-            run_script(
-                state,
-                "navigate",
-                optional_string_arg(args, "targetId"),
-                &[url],
-            )
-            .await?
-        }
-        "close" => {
-            let target_id = required_string_arg(args, "targetId")?;
-            ensure_page_target_exists(state, target_id).await?;
-            let response = state
-                .http
-                .get(format!(
-                    "{CDP}/json/close/{}",
-                    urlencoding::encode(target_id)
-                ))
-                .send()
-                .await
-                .map_err(|error| format!("browser request failed: {error}"))?;
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .map_err(|error| format!("browser response failed: {error}"))?;
-            if !status.is_success() || body.contains("No such target id") {
-                return Err(format!(
-                    "failed to close browser target {target_id}: {}",
-                    body.trim()
-                ));
+    let queue_ms = queued_at.elapsed().as_secs_f64() * 1_000.0;
+    let started_at = Instant::now();
+
+    let result: Result<String, String> = async {
+        let text = match action {
+            "tabs" => list_tabs(state).await?,
+            "new" => {
+                let url = args
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("about:blank");
+                safe_browser_url(url)?;
+                state
+                    .http
+                    .put(format!("{CDP}/json/new?{}", urlencoding::encode(url)))
+                    .send()
+                    .await
+                    .map_err(|error| format!("browser request failed: {error}"))?
+                    .text()
+                    .await
+                    .map_err(|error| format!("browser response failed: {error}"))?
             }
-            body
-        }
-        "snapshot" => {
-            run_script(
-                state,
-                "snapshot",
-                optional_string_arg(args, "targetId"),
-                &[],
-            )
-            .await?
-        }
-        "click" => {
-            run_script(
-                state,
-                "click",
-                optional_string_arg(args, "targetId"),
-                &[required_string_arg(args, "selector")?],
-            )
-            .await?
-        }
-        "fill" => {
-            let selector = required_string_arg(args, "selector")?;
-            let value = args
-                .get("value")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            run_script(
-                state,
-                "fill",
-                optional_string_arg(args, "targetId"),
-                &[selector, value],
-            )
-            .await?
-        }
-        "evaluate" => {
-            run_script(
-                state,
-                "evaluate",
-                optional_string_arg(args, "targetId"),
-                &[required_string_arg(args, "expression")?],
-            )
-            .await?
-        }
-        _ => return Err(format!("unknown browser action: {action}")),
-    };
-    Ok(trunc(&text, 15_000))
+            "navigate" => {
+                let url = args
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "url is required".to_string())?;
+                safe_browser_url(url)?;
+                run_script(
+                    state,
+                    "navigate",
+                    optional_string_arg(args, "targetId"),
+                    &[url],
+                )
+                .await?
+            }
+            "close" => {
+                let target_id = required_string_arg(args, "targetId")?;
+                ensure_page_target_exists(state, target_id).await?;
+                let response = state
+                    .http
+                    .get(format!(
+                        "{CDP}/json/close/{}",
+                        urlencoding::encode(target_id)
+                    ))
+                    .send()
+                    .await
+                    .map_err(|error| format!("browser request failed: {error}"))?;
+                let status = response.status();
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|error| format!("browser response failed: {error}"))?;
+                if !status.is_success() || body.contains("No such target id") {
+                    return Err(format!(
+                        "failed to close browser target {target_id}: {}",
+                        body.trim()
+                    ));
+                }
+                body
+            }
+            "snapshot" => {
+                run_script(
+                    state,
+                    "snapshot",
+                    optional_string_arg(args, "targetId"),
+                    &[],
+                )
+                .await?
+            }
+            "click" => {
+                run_script(
+                    state,
+                    "click",
+                    optional_string_arg(args, "targetId"),
+                    &[required_string_arg(args, "selector")?],
+                )
+                .await?
+            }
+            "fill" => {
+                let selector = required_string_arg(args, "selector")?;
+                let value = args
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                run_script(
+                    state,
+                    "fill",
+                    optional_string_arg(args, "targetId"),
+                    &[selector, value],
+                )
+                .await?
+            }
+            "evaluate" => {
+                run_script(
+                    state,
+                    "evaluate",
+                    optional_string_arg(args, "targetId"),
+                    &[required_string_arg(args, "expression")?],
+                )
+                .await?
+            }
+            _ => return Err(format!("unknown browser action: {action}")),
+        };
+        Ok(trunc(&text, 15_000))
+    }
+    .await;
+
+    tracing::info!(
+        target: "mcp_bridge::latency",
+        tool = "browser",
+        action,
+        queue_ms,
+        elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
+        success = result.is_ok(),
+        "tool latency"
+    );
+    drop(permit);
+    result
 }
 
 async fn fetch_targets(state: &AppState) -> Result<serde_json::Value, String> {
@@ -195,54 +220,187 @@ async fn run_script(
             state.config.browser_script.display()
         ));
     }
-    ensure_helper_compatible(state).await?;
-    let mut arguments = vec![
-        state.config.browser_script.to_string_lossy().into_owned(),
-        action.to_string(),
-        target_id.unwrap_or_default().to_string(),
-    ];
-    arguments.extend(args.iter().map(|value| (*value).to_string()));
+
+    let mut worker_guard = state.browser_worker.lock().await;
+    let needs_spawn = match worker_guard.as_mut() {
+        Some(worker) => match worker.child.try_wait() {
+            Ok(None) => false,
+            Ok(Some(_)) | Err(_) => true,
+        },
+        None => true,
+    };
+    if needs_spawn {
+        *worker_guard = Some(spawn_browser_worker(state).await?);
+    }
+
+    let request_id = {
+        let worker = worker_guard
+            .as_mut()
+            .ok_or_else(|| "browser worker was not initialized".to_string())?;
+        let id = worker.next_id;
+        worker.next_id = worker.next_id.wrapping_add(1).max(1);
+        id
+    };
+    let request = json!({
+        "id": request_id,
+        "action": action,
+        "targetId": target_id.unwrap_or_default(),
+        "args": args,
+    });
+
+    let response = {
+        let worker = worker_guard
+            .as_mut()
+            .ok_or_else(|| "browser worker was not initialized".to_string())?;
+        tokio::time::timeout(
+            state.config.process.browser_timeout,
+            browser_worker_round_trip(worker, &request),
+        )
+        .await
+    };
+
+    let response = match response {
+        Err(_) => {
+            terminate_browser_worker(&mut worker_guard).await;
+            return Err(format!(
+                "browser worker timed out after {}s",
+                state.config.process.browser_timeout.as_secs()
+            ));
+        }
+        Ok(Err(error)) => {
+            terminate_browser_worker(&mut worker_guard).await;
+            return Err(error);
+        }
+        Ok(Ok(response)) => response,
+    };
+
+    if response.get("id").and_then(Value::as_u64) != Some(request_id) {
+        terminate_browser_worker(&mut worker_guard).await;
+        return Err("browser worker response was out of sequence".to_string());
+    }
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(response
+            .get("result")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string());
+    }
+    Err(response
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("browser worker returned an unknown error")
+        .to_string())
+}
+
+async fn spawn_browser_worker(state: &AppState) -> Result<BrowserWorker, String> {
     let node_path = discover_node_path(state).await;
-    let extra_env = node_path
-        .as_deref()
-        .map(|path| [("NODE_PATH", path)])
-        .unwrap_or([("NODE_PATH", "")]);
-    let output = run_program_with_env(
-        "node",
-        &arguments,
-        None,
+    let mut command = Command::new("node");
+    command
+        .arg(state.config.browser_script.to_string_lossy().into_owned())
+        .arg("serve")
+        .env_clear()
+        .envs(safe_child_environment(&state.config.process))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(node_path) = node_path.as_deref() {
+        command.env("NODE_PATH", node_path);
+    }
+    configure_worker_process_group(&mut command);
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to start persistent browser worker: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "browser worker stdin is unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "browser worker stdout is unavailable".to_string())?;
+    let mut worker = BrowserWorker {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        next_id: 1,
+    };
+
+    let mut ready_line = String::new();
+    let read = tokio::time::timeout(
         state.config.process.browser_timeout,
-        &state.config.process,
-        &extra_env,
+        worker.stdout.read_line(&mut ready_line),
     )
-    .await;
-    if output.code == Some(0) && !output.timed_out {
-        Ok(output.render())
-    } else {
-        Err(output.render())
+    .await
+    .map_err(|_| "browser worker did not become ready before timeout".to_string())?
+    .map_err(|error| format!("failed to read browser worker handshake: {error}"))?;
+    if read == 0 {
+        return Err("browser worker exited before readiness handshake".to_string());
+    }
+    let ready: Value = serde_json::from_str(ready_line.trim())
+        .map_err(|error| format!("browser worker handshake was invalid JSON: {error}"))?;
+    if ready.get("type").and_then(Value::as_str) != Some("ready")
+        || ready.get("protocol").and_then(Value::as_str) != Some(HELPER_PROTOCOL)
+    {
+        return Err(format!(
+            "browser helper protocol mismatch: bridge expects {HELPER_PROTOCOL}"
+        ));
+    }
+
+    tracing::info!(
+        target: "mcp_bridge::latency",
+        protocol = HELPER_PROTOCOL,
+        "persistent browser worker ready"
+    );
+    Ok(worker)
+}
+
+async fn browser_worker_round_trip(
+    worker: &mut BrowserWorker,
+    request: &Value,
+) -> Result<Value, String> {
+    let mut encoded = serde_json::to_vec(request)
+        .map_err(|error| format!("failed to encode browser worker request: {error}"))?;
+    encoded.push(b'\n');
+    worker
+        .stdin
+        .write_all(&encoded)
+        .await
+        .map_err(|error| format!("failed to write browser worker request: {error}"))?;
+    worker
+        .stdin
+        .flush()
+        .await
+        .map_err(|error| format!("failed to flush browser worker request: {error}"))?;
+
+    let mut line = String::new();
+    let read = worker
+        .stdout
+        .read_line(&mut line)
+        .await
+        .map_err(|error| format!("failed to read browser worker response: {error}"))?;
+    if read == 0 {
+        return Err("browser worker exited while processing a request".to_string());
+    }
+    serde_json::from_str(line.trim())
+        .map_err(|error| format!("browser worker returned invalid JSON: {error}"))
+}
+
+async fn terminate_browser_worker(worker_guard: &mut Option<BrowserWorker>) {
+    if let Some(mut worker) = worker_guard.take() {
+        let _ = worker.child.kill().await;
+        let _ = worker.child.wait().await;
     }
 }
 
-async fn ensure_helper_compatible(state: &AppState) -> Result<(), String> {
-    state.browser_helper_check.get_or_init(|| async {
-        let node_path = discover_node_path(state).await;
-        let extra_env = node_path.as_deref().map(|path| [("NODE_PATH", path)]).unwrap_or([("NODE_PATH", "")]);
-        let output = run_program_with_env(
-            "node",
-            &[state.config.browser_script.to_string_lossy().into_owned(), "version".to_string()],
-            None,
-            state.config.process.browser_timeout,
-            &state.config.process,
-            &extra_env,
-        ).await;
-        if !output.is_success() { return Err(format!("browser helper version check failed: {}", output.render())); }
-        let actual = output.stdout.trim();
-        if actual != HELPER_PROTOCOL {
-            return Err(format!("browser helper protocol mismatch: bridge expects {HELPER_PROTOCOL}, helper reports {actual}"));
-        }
-        Ok(())
-    }).await.clone()
+#[cfg(unix)]
+fn configure_worker_process_group(command: &mut Command) {
+    command.process_group(0);
 }
+
+#[cfg(not(unix))]
+fn configure_worker_process_group(_command: &mut Command) {}
 
 async fn discover_node_path(state: &AppState) -> Option<String> {
     state
