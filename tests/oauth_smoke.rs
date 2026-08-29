@@ -196,6 +196,13 @@ async fn oauth_pkce_throttling_and_refresh_rotation_work_end_to_end() {
         .and_then(|value| value.to_str().ok())
         .expect("OAuth login should have a CSP");
     assert!(csp.contains("form-action 'self' https://chatgpt.com"));
+    assert_eq!(
+        login
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
 
     let good = client
         .post(&authorize_url)

@@ -51,42 +51,6 @@ impl TrustProxy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentKind {
-    Codex,
-    OpenCode,
-}
-
-impl AgentKind {
-    fn from_env(command: Option<&str>) -> Result<Option<Self>, String> {
-        if let Ok(value) = env::var("MCP_AGENT_KIND") {
-            return match value.trim().to_ascii_lowercase().as_str() {
-                "codex" => Ok(Some(Self::Codex)),
-                "opencode" | "open-code" => Ok(Some(Self::OpenCode)),
-                "" => Ok(None),
-                other => Err(format!(
-                    "invalid MCP_AGENT_KIND '{other}'; expected codex or opencode"
-                )),
-            };
-        }
-        let Some(command) = command else {
-            return Ok(None);
-        };
-        let name = PathBuf::from(command)
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or(command)
-            .to_ascii_lowercase();
-        if name.contains("opencode") {
-            Ok(Some(Self::OpenCode))
-        } else if name.contains("codex") {
-            Ok(Some(Self::Codex))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AccessToken {
     pub id: String,
@@ -97,18 +61,15 @@ pub struct AccessToken {
 pub struct ToolConfig {
     pub shell: bool,
     pub browser: bool,
-    pub agent: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProcessConfig {
     pub shell_timeout: Duration,
-    pub agent_timeout: Duration,
     pub browser_timeout: Duration,
     pub stdout_limit: usize,
     pub stderr_limit: usize,
     pub shell_concurrency: usize,
-    pub agent_concurrency: usize,
     pub browser_concurrency: usize,
     pub child_env_allowlist: HashSet<String>,
 }
@@ -155,8 +116,6 @@ pub struct Config {
     pub max_sessions_per_principal: usize,
     pub browser_script: PathBuf,
     pub node_path: Option<String>,
-    pub agent_command: Option<String>,
-    pub agent_kind: Option<AgentKind>,
     pub trust_proxy: TrustProxy,
     pub state_file: Option<PathBuf>,
     pub tokens: Vec<AccessToken>,
@@ -178,7 +137,6 @@ impl Config {
         let tools = ToolConfig {
             shell: env_bool("MCP_ENABLE_SHELL", defaults_enabled),
             browser: env_bool("MCP_ENABLE_BROWSER", defaults_enabled),
-            agent: env_bool("MCP_ENABLE_AGENT", defaults_enabled),
         };
 
         let oauth = OAuthConfig {
@@ -266,14 +224,6 @@ impl Config {
         if allow_unauthenticated && !is_loopback_host(&host) {
             return Err("MCP_ALLOW_UNAUTHENTICATED=true is permitted only on a loopback MCP_HOST (127.0.0.1, ::1, or localhost)".to_string());
         }
-        let agent_command = env::var("MCP_AGENT_COMMAND")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let agent_kind = AgentKind::from_env(agent_command.as_deref())?;
-        if tools.agent && agent_command.is_some() && agent_kind.is_none() {
-            return Err("MCP_AGENT_COMMAND is enabled but its CLI type is unknown; set MCP_AGENT_KIND=codex or MCP_AGENT_KIND=opencode".to_string());
-        }
 
         let state_file = state_file_path(&workdir);
 
@@ -303,8 +253,6 @@ impl Config {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
-            agent_command,
-            agent_kind,
             trust_proxy: TrustProxy::from_env()?,
             state_file,
             tokens,
@@ -317,12 +265,6 @@ impl Config {
                     1,
                     600,
                 )?),
-                agent_timeout: Duration::from_secs(env_u64(
-                    "MCP_AGENT_TIMEOUT_SECONDS",
-                    180,
-                    1,
-                    1_800,
-                )?),
                 browser_timeout: Duration::from_secs(env_u64(
                     "MCP_BROWSER_TIMEOUT_SECONDS",
                     30,
@@ -332,7 +274,6 @@ impl Config {
                 stdout_limit: env_usize("MCP_STDOUT_LIMIT_BYTES", 1_048_576, 4_096, 16_777_216)?,
                 stderr_limit: env_usize("MCP_STDERR_LIMIT_BYTES", 262_144, 4_096, 4_194_304)?,
                 shell_concurrency: env_usize("MCP_SHELL_CONCURRENCY", 2, 1, 16)?,
-                agent_concurrency: env_usize("MCP_AGENT_CONCURRENCY", 2, 1, 16)?,
                 browser_concurrency: env_usize("MCP_BROWSER_CONCURRENCY", 1, 1, 8)?,
                 child_env_allowlist,
             },

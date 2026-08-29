@@ -27,6 +27,7 @@ const SECURITY_HEADERS: [(&str, &str); 4] = [
 pub(super) fn login_page(
     request: &OAuthAuthorizeRequest,
     client: &OAuthClient,
+    validated_redirect_uri: &str,
     error: Option<&str>,
 ) -> Response {
     let hidden = [
@@ -95,7 +96,7 @@ pub(super) fn login_page(
             body,
         )
             .into_response(),
-        request,
+        validated_redirect_uri,
     )
 }
 
@@ -176,12 +177,15 @@ pub(super) fn with_security_headers(mut response: Response) -> Response {
     response
 }
 
-fn with_login_security_headers(
-    mut response: Response,
-    request: &OAuthAuthorizeRequest,
-) -> Response {
+fn with_login_security_headers(mut response: Response, validated_redirect_uri: &str) -> Response {
     add_security_headers(&mut response);
-    if let Some(origin) = redirect_origin(request)
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    if let Some(origin) = redirect_origin(validated_redirect_uri)
         && let Ok(policy) = HeaderValue::try_from(format!(
             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' {origin}; frame-ancestors 'none'; base-uri 'none'"
         ))
@@ -193,8 +197,7 @@ fn with_login_security_headers(
     response
 }
 
-fn redirect_origin(request: &OAuthAuthorizeRequest) -> Option<String> {
-    let redirect_uri = request.redirect_uri.as_deref()?;
+pub(super) fn redirect_origin(redirect_uri: &str) -> Option<String> {
     let url = Url::parse(redirect_uri).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;

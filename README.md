@@ -4,7 +4,7 @@ MCP Bridge is a Rust gateway that connects MCP clients such as ChatGPT to a loca
 
 Version 0.5.2 is designed around two goals:
 
-1. **Personal desktop automation**: keep powerful local capabilities such as unrestricted shell access, browser control, and coding-agent workflows. Applications and audio remain accessible through the trusted shell when needed.
+1. **Personal desktop automation**: keep a deliberately small trusted surface: unrestricted shell access, browser control, and a synchronous backend prompt bridge. Applications, audio, and coding CLIs remain accessible through the trusted shell when needed.
 2. **Safe boundaries**: do not leak bridge credentials into child processes, constrain filesystem access to a configured workspace, bound process output/concurrency, terminate timed-out process trees, and keep authentication/session ownership explicit.
 
 The MCP protocol layer uses the official Rust MCP SDK (`rmcp`) and currently negotiates every protocol revision supported by that SDK, including `2026-07-28` and legacy `2025-03-26` clients.
@@ -16,10 +16,6 @@ Core backend tools are always available when the backend is configured:
 | Tool | Purpose |
 | --- | --- |
 | `bridge_prompt` | Send a prompt to the configured local agent backend and wait for the result |
-| `bridge_prompt_async` | Send a prompt without waiting for completion |
-| `bridge_session_messages` | Read messages from a bridge-owned backend session |
-| `bridge_session_status` | Read status from a bridge-owned backend session |
-| `bridge_list_sessions` | List backend sessions owned by the authenticated principal |
 | `bridge_read_file` | Read an existing file inside `BRIDGE_WORKDIR` through the backend |
 | `bridge_search` | Search the configured backend workspace |
 
@@ -28,10 +24,9 @@ Optional host/desktop tools:
 | Tool | Purpose | Switch |
 | --- | --- | --- |
 | `shell` | Run unrestricted host Bash commands with a sanitized environment, bounded output, timeout, process-tree termination, and concurrency limiting | `MCP_ENABLE_SHELL=true` |
-| `bridge_agent_prompt` | Run the configured command-line coding agent | `MCP_ENABLE_AGENT=true` |
 | `browser` | Control a local Chrome/Chromium CDP session | `MCP_ENABLE_BROWSER=true` |
 
-`MCP_ENABLE_HOST_TOOLS=true` remains supported for 0.3 compatibility. In the `personal-desktop` profile it enables the optional shell, browser, and coding-agent groups unless an individual switch overrides the default.
+`MCP_ENABLE_HOST_TOOLS=true` remains supported for 0.3 compatibility. In the `personal-desktop` profile it enables the optional shell and browser groups unless an individual switch overrides the default.
 
 ## Requirements
 
@@ -39,8 +34,7 @@ Only install what your deployment uses:
 
 - Rust 1.88 or newer
 - Bash for `shell`
-- A compatible backend service for the seven `bridge_*` tools
-- A command-line agent for `bridge_agent_prompt`
+- A compatible backend service for `bridge_prompt`, `bridge_read_file`, and `bridge_search`
 - Google Chrome/Chromium, Node.js, and Playwright for `browser`
 - `cloudflared` only when an external MCP client must reach the bridge through a tunnel
 
@@ -48,9 +42,7 @@ The backend adapter expects these local HTTP endpoints:
 
 - `/global/health`
 - `/session`
-- `/session/{id}`
 - `/session/{id}/message`
-- `/session/{id}/prompt_async`
 - `/find`
 - `/file/content`
 
@@ -98,7 +90,6 @@ or individual switches:
 ```bash
 export MCP_ENABLE_SHELL=true
 export MCP_ENABLE_BROWSER=true
-export MCP_ENABLE_AGENT=true
 ```
 
 ### `server-secure`
@@ -111,7 +102,7 @@ export MCP_PROFILE=server-secure
 
 ## Child-process security model
 
-The bridge itself may contain authentication secrets such as `MCP_OAUTH_PASSWORD`. Shell, browser, and agent child processes **do not inherit the full bridge environment**.
+The bridge itself may contain authentication secrets such as `MCP_OAUTH_PASSWORD`. Shell and browser helper child processes **do not inherit the full bridge environment**.
 
 Instead, the bridge clears each child environment and restores only an allowlist of ordinary runtime variables. Personal-desktop mode includes the desktop/session variables needed for Wayland, DBus, PipeWire, and host-shell/browser workflows.
 
@@ -132,12 +123,10 @@ Default limits:
 | Variable | Default | Range / purpose |
 | --- | ---: | --- |
 | `MCP_SHELL_TIMEOUT_SECONDS` | `30` | Shell timeout, 1–600 seconds |
-| `MCP_AGENT_TIMEOUT_SECONDS` | `180` | Agent timeout, 1–1800 seconds |
 | `MCP_BROWSER_TIMEOUT_SECONDS` | `30` | Browser/helper timeout, 1–300 seconds |
 | `MCP_STDOUT_LIMIT_BYTES` | `1048576` | Captured stdout cap |
 | `MCP_STDERR_LIMIT_BYTES` | `262144` | Captured stderr cap |
 | `MCP_SHELL_CONCURRENCY` | `2` | Concurrent shell calls |
-| `MCP_AGENT_CONCURRENCY` | `2` | Concurrent agent calls |
 | `MCP_BROWSER_CONCURRENCY` | `1` | Concurrent browser calls |
 
 Output is bounded while it is being read, so a noisy process cannot allocate unbounded bridge memory. On Unix, timed-out commands are placed in their own process group and the complete group is terminated.
@@ -178,22 +167,6 @@ The browser helper supports:
 `targetId` can be supplied for page-specific Playwright actions. If omitted, the most recent Playwright page is used. `snapshot` uses the current Playwright ARIA snapshot API and falls back to body text if unavailable. `evaluate` preserves structured JSON values, missing close targets are errors, and the Rust bridge verifies `mcp-browser-helper/2` before invoking the helper. The helper also understands the 0.3 argument layout to reduce mixed-version failure during an upgrade.
 
 Do not expose port `9222` publicly.
-
-## Command-line agent
-
-Set the executable/path and adapter type, not a shell command string:
-
-```bash
-# Codex
-export MCP_AGENT_COMMAND=codex
-export MCP_AGENT_KIND=codex
-
-# or OpenCode
-export MCP_AGENT_COMMAND="$HOME/.opencode/bin/opencode"
-export MCP_AGENT_KIND=opencode
-```
-
-Codex uses `exec --json -C ... --sandbox <mode>`. OpenCode uses `run --format json --dir ...`; `danger-full-access` maps to OpenCode `--auto`, while the other modes keep OpenCode's native permission system. Non-zero exits and timeouts are reported as MCP tool errors. If `MCP_AGENT_KIND` is omitted, the bridge can infer `codex` or `opencode` from an unambiguous executable basename.
 
 ## Authentication
 
@@ -336,9 +309,6 @@ ingress:
 | `MCP_ENABLE_HOST_TOOLS` | `false` | Legacy personal-desktop master switch |
 | `MCP_ENABLE_SHELL` | profile/master default | Enable `shell` |
 | `MCP_ENABLE_BROWSER` | profile/master default | Enable `browser` |
-| `MCP_ENABLE_AGENT` | profile/master default | Enable command-line agent |
-| `MCP_AGENT_COMMAND` | unset | Codex/OpenCode executable path |
-| `MCP_AGENT_KIND` | inferred | `codex` or `opencode`; required if executable name is ambiguous |
 | `MCP_BROWSER_SCRIPT` | auto-detected | Browser helper path; protocol compatibility is checked before use |
 | `MCP_CHILD_ENV_ALLOW` | unset | Extra comma-separated non-secret child environment names |
 | `MCP_STATE_FILE` | XDG/user state path | Durable refresh-token fingerprints, DCR clients, and session ownership; `:memory:` disables persistence |
@@ -361,12 +331,10 @@ ingress:
 | `MCP_OAUTH_MAX_ACCESS_TOKENS` | `1024` | Maximum in-memory OAuth access tokens |
 | `MCP_OAUTH_MAX_REFRESH_TOKENS` | `1024` | Maximum in-memory OAuth refresh tokens |
 | `MCP_SHELL_TIMEOUT_SECONDS` | `30` | Shell timeout, bounded to 1–600 seconds |
-| `MCP_AGENT_TIMEOUT_SECONDS` | `180` | Agent timeout, bounded to 1–1800 seconds |
 | `MCP_BROWSER_TIMEOUT_SECONDS` | `30` | Browser helper timeout, bounded to 1–300 seconds |
 | `MCP_STDOUT_LIMIT_BYTES` | `1048576` | Per-process captured stdout limit |
 | `MCP_STDERR_LIMIT_BYTES` | `262144` | Per-process captured stderr limit |
 | `MCP_SHELL_CONCURRENCY` | `2` | Maximum concurrent shell executions |
-| `MCP_AGENT_CONCURRENCY` | `2` | Maximum concurrent agent executions |
 | `MCP_BROWSER_CONCURRENCY` | `1` | Maximum concurrent browser helper operations |
 
 MCP/HTTP request bodies are hard-limited to 1 MiB before RMCP parsing. Oversized requests return HTTP `413 Payload Too Large`.
@@ -406,6 +374,7 @@ Local quality gates:
 cargo fmt --all -- --check
 cargo check --locked --all-targets --all-features
 cargo test --locked --all-features
+NODE_PATH="$(npm root -g)" node tests/oauth_browser.cjs
 cargo clippy --locked --all-targets --all-features -- -D warnings
 node --check scripts/browser.cjs
 bash -n scripts/package-release.sh

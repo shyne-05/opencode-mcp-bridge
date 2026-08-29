@@ -168,7 +168,6 @@ async fn main() {
         version = env!("CARGO_PKG_VERSION"),
         shell = state.config.tools.shell,
         browser = state.config.tools.browser,
-        agent = state.config.tools.agent,
         "mcp-bridge started"
     );
     if state.config.allow_unauthenticated {

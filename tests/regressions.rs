@@ -131,16 +131,13 @@ async fn readiness_is_unhealthy_when_backend_is_down() {
 }
 
 #[tokio::test]
-async fn shell_and_agent_failures_are_tool_errors() {
+async fn shell_failures_are_tool_errors() {
     let bridge = spawn_bridge(|command, _| {
         command
             .env("MCP_PROFILE", "personal-desktop")
             .env("MCP_TOKEN", TOKEN)
             .env("MCP_ENABLE_SHELL", "true")
-            .env("MCP_SHELL_TIMEOUT_SECONDS", "1")
-            .env("MCP_ENABLE_AGENT", "true")
-            .env("MCP_AGENT_COMMAND", "/bin/false")
-            .env("MCP_AGENT_KIND", "codex");
+            .env("MCP_SHELL_TIMEOUT_SECONDS", "1");
     })
     .await;
 
@@ -160,14 +157,6 @@ async fn shell_and_agent_failures_are_tool_errors() {
     )
     .await;
     assert_eq!(timeout["result"]["isError"], true);
-    let (_, agent) = tool_call(
-        &bridge.base_url,
-        TOKEN,
-        "bridge_agent_prompt",
-        json!({"prompt":"hello"}),
-    )
-    .await;
-    assert_eq!(agent["result"]["isError"], true);
 }
 
 async fn spawn_fake_backend(
@@ -187,9 +176,8 @@ async fn spawn_fake_backend(
                 ]))
             }
         }))
-        .route("/session", post(|| async { Json(json!({"id":"ses_restart"})) }).get(|| async { Json(json!([])) }))
-        .route("/session/{id}/prompt_async", post(|| async { StatusCode::NO_CONTENT }))
-        .route("/session/status", get(|| async { Json(json!({"ses_restart":{"type":"busy"}})) }));
+        .route("/session", post(|| async { Json(json!({"id":"ses_restart"})) }))
+        .route("/session/{id}/message", post(|| async { Json(json!({"parts":[{"type":"text","text":"ok"}]})) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
@@ -199,7 +187,7 @@ async fn spawn_fake_backend(
 }
 
 #[tokio::test]
-async fn search_and_session_ownership_respect_boundaries_across_restart() {
+async fn search_boundaries_and_prompt_sessions_work() {
     let work = tempdir().unwrap();
     let outside_dir = tempdir().unwrap();
     std::fs::write(work.path().join("inside.txt"), "INSIDE_MARKER").unwrap();
@@ -230,27 +218,15 @@ async fn search_and_session_ownership_respect_boundaries_across_restart() {
     assert!(text.contains("INSIDE_MARKER"));
     assert!(!text.contains("OUTSIDE_MARKER"));
 
-    let (_, created) = tool_call(
+    let (_, prompted) = tool_call(
         &bridge.base_url,
         TOKEN,
-        "bridge_prompt_async",
+        "bridge_prompt",
         json!({"prompt":"hello"}),
     )
     .await;
-    assert_eq!(created["result"]["isError"], false);
-    drop(bridge);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let bridge = spawn_bridge_at_port(port, configure).await;
-    let (_, status) = tool_call(
-        &bridge.base_url,
-        TOKEN,
-        "bridge_session_status",
-        json!({"sessionId":"ses_restart"}),
-    )
-    .await;
-    assert_eq!(status["result"]["isError"], false);
-    assert!(tool_text(&status).contains("busy"));
+    assert_eq!(prompted["result"]["isError"], false);
+    assert!(tool_text(&prompted).contains("Session:ses_restart"));
     drop(bridge);
     backend_task.abort();
 }

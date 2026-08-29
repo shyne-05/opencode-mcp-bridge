@@ -11,7 +11,7 @@ MCP Bridge has two intentionally different roles:
 - a local/backend MCP gateway
 - an optional personal-computer automation gateway
 
-When host tools are enabled, authenticated clients may execute host commands, interact with the desktop session, access browser state, or run a coding agent. This is intentional capability, not a sandbox escape.
+When host tools are enabled, authenticated clients may execute host commands, interact with the desktop session, or access browser state. This is intentional capability, not a sandbox escape.
 
 The primary security boundary is therefore **authentication + deployment trust**, followed by defense-in-depth controls that reduce accidental privilege/secret exposure.
 
@@ -46,7 +46,7 @@ By default durable state is stored under the user's XDG state directory (or `~/.
 - A small runtime/desktop environment allowlist is reconstructed explicitly.
 - Secret-looking environment variable names cannot be added through `MCP_CHILD_ENV_ALLOW`.
 - Captured stdout/stderr is bounded while streaming.
-- Tool-specific semaphores limit concurrent shell/agent/browser work.
+- Tool-specific semaphores limit concurrent shell/browser work.
 - On Unix, spawned commands run in a separate process group and timed-out process groups are terminated.
 
 These controls reduce accidental credential leakage and denial-of-service risk. They do **not** constrain what an explicitly enabled unrestricted shell command can do using the host account's normal permissions.

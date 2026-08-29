@@ -261,12 +261,10 @@ mod tests {
     fn config(names: &[&str]) -> ProcessConfig {
         ProcessConfig {
             shell_timeout: Duration::from_secs(1),
-            agent_timeout: Duration::from_secs(1),
             browser_timeout: Duration::from_secs(1),
             stdout_limit: 1024,
             stderr_limit: 1024,
             shell_concurrency: 1,
-            agent_concurrency: 1,
             browser_concurrency: 1,
             child_env_allowlist: names
                 .iter()

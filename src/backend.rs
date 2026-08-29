@@ -11,7 +11,6 @@ pub struct PromptRequest<'a> {
     pub directory: Option<&'a str>,
     pub agent: Option<&'a str>,
     pub model: Option<&'a str>,
-    pub asynchronous: bool,
 }
 
 pub struct Backend<'a> {
@@ -74,86 +73,6 @@ impl<'a> Backend<'a> {
         filter_search_results(&self.state.config.workdir, &text)
     }
 
-    pub async fn list_sessions(&self, principal: &str) -> Result<String, String> {
-        let response = self
-            .state
-            .http
-            .get(self.url("/session"))
-            .send()
-            .await
-            .map_err(|error| format!("backend request failed: {error}"))?;
-        let text =
-            response_text_checked(response, self.state.config.backend_response_limit).await?;
-        let owned = self.state.owned_sessions(principal).await;
-        let Value::Array(items) = serde_json::from_str::<Value>(&text)
-            .map_err(|_| "backend returned an invalid session list".to_string())?
-        else {
-            return Err("backend returned an invalid session list".to_string());
-        };
-        serde_json::to_string(
-            &items
-                .into_iter()
-                .filter(|item| {
-                    item.get("id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| owned.contains(id))
-                })
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|error| format!("failed to encode session list: {error}"))
-    }
-
-    pub async fn session_messages(
-        &self,
-        principal: &str,
-        session_id: &str,
-        limit: u64,
-    ) -> Result<String, String> {
-        self.require_session(principal, session_id).await?;
-        let response = self
-            .state
-            .http
-            .get(self.url(&format!(
-                "/session/{}/message",
-                urlencoding::encode(session_id)
-            )))
-            .query(&[("limit", limit.min(100))])
-            .send()
-            .await
-            .map_err(|error| format!("backend request failed: {error}"))?;
-        Ok(trunc(
-            &response_text_checked(response, self.state.config.backend_response_limit).await?,
-            15_000,
-        ))
-    }
-
-    pub async fn session_status(
-        &self,
-        principal: &str,
-        session_id: &str,
-    ) -> Result<String, String> {
-        self.require_session(principal, session_id).await?;
-        let directory = self.state.config.workdir.to_string_lossy().into_owned();
-        let response = self
-            .state
-            .http
-            .get(self.url("/session/status"))
-            .query(&[("directory", directory)])
-            .send()
-            .await
-            .map_err(|error| format!("backend request failed: {error}"))?;
-        let text =
-            response_text_checked(response, self.state.config.backend_response_limit).await?;
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|error| format!("backend returned invalid session status JSON: {error}"))?;
-        let status = value
-            .get(session_id)
-            .cloned()
-            .unwrap_or_else(|| json!({"type": "idle"}));
-        serde_json::to_string(&status)
-            .map_err(|error| format!("failed to encode session status: {error}"))
-    }
-
     pub async fn prompt(
         &self,
         principal: &str,
@@ -211,11 +130,7 @@ impl<'a> Backend<'a> {
             body["model"] = json!({"providerID": provider, "modelID": model_id});
         }
         let directory = directory.to_string_lossy().into_owned();
-        let endpoint = if request.asynchronous {
-            "prompt_async"
-        } else {
-            "message"
-        };
+        let endpoint = "message";
         let response = self
             .state
             .http
@@ -229,13 +144,6 @@ impl<'a> Backend<'a> {
             .send()
             .await
             .map_err(|error| format!("backend request failed: {error}"))?;
-
-        if request.asynchronous {
-            if response.status().is_success() {
-                return Ok(format!("Async request sent for session {session_id}"));
-            }
-            return Err(format!("backend returned status {}", response.status()));
-        }
 
         let text =
             response_text_checked(response, self.state.config.backend_response_limit).await?;

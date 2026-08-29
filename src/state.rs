@@ -5,7 +5,7 @@ use crate::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -72,7 +72,6 @@ pub struct AppState {
     pub oauth_refresh_tokens: Arc<RwLock<HashMap<String, OAuthRefreshToken>>>,
     pub failed_logins: Arc<Mutex<HashMap<String, VecDeque<u64>>>>,
     pub shell_slots: Arc<Semaphore>,
-    pub agent_slots: Arc<Semaphore>,
     pub browser_slots: Arc<Semaphore>,
     pub node_path: Arc<OnceCell<Option<String>>>,
     pub browser_helper_check: Arc<OnceCell<Result<(), String>>>,
@@ -88,7 +87,6 @@ impl AppState {
             .build()
             .map_err(|error| format!("failed to build HTTP client: {error}"))?;
         let shell_slots = Arc::new(Semaphore::new(config.process.shell_concurrency));
-        let agent_slots = Arc::new(Semaphore::new(config.process.agent_concurrency));
         let browser_slots = Arc::new(Semaphore::new(config.process.browser_concurrency));
         let durable = Arc::new(DurableStore::new(config.state_file.clone()));
         let persisted = durable.load()?;
@@ -110,7 +108,6 @@ impl AppState {
             oauth_refresh_tokens: Arc::new(RwLock::new(persisted.refresh_tokens)),
             failed_logins: Default::default(),
             shell_slots,
-            agent_slots,
             browser_slots,
             node_path: Arc::new(OnceCell::new()),
             browser_helper_check: Arc::new(OnceCell::new()),
@@ -135,15 +132,6 @@ impl AppState {
             .await
             .get(principal)
             .is_some_and(|sessions| sessions.iter().any(|existing| existing == session_id))
-    }
-
-    pub async fn owned_sessions(&self, principal: &str) -> HashSet<String> {
-        self.sessions
-            .read()
-            .await
-            .get(principal)
-            .map(|sessions| sessions.iter().cloned().collect())
-            .unwrap_or_default()
     }
 
     pub async fn persist_durable(&self) -> Result<(), String> {
