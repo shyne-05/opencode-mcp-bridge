@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     durable::{DurableSnapshot, DurableStore},
+    util::token_fingerprint,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Mutex, OnceCell, RwLock, Semaphore};
+
+const ACCESS_TOKEN_FINGERPRINT_PREFIX: &str = "sha256:";
 
 #[derive(Debug, Clone)]
 pub struct AuthorizationCode {
@@ -41,7 +44,7 @@ pub struct OAuthClient {
     pub expires_at: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthAccessToken {
     pub principal: String,
     pub resource: String,
@@ -67,6 +70,9 @@ pub struct AppState {
     pub sessions: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
     pub oauth_codes: Arc<RwLock<HashMap<String, AuthorizationCode>>>,
     pub oauth_clients: Arc<RwLock<HashMap<String, OAuthClient>>>,
+    /// Fresh access tokens are keyed by plaintext only in memory. Persisted entries use a
+    /// `sha256:` fingerprint key so restarts preserve authorization without storing bearer
+    /// credentials that can be replayed from the state file.
     pub oauth_access_tokens: Arc<RwLock<HashMap<String, OAuthAccessToken>>>,
     /// Refresh tokens are keyed by SHA-256 fingerprint, never by plaintext token.
     pub oauth_refresh_tokens: Arc<RwLock<HashMap<String, OAuthRefreshToken>>>,
@@ -104,7 +110,7 @@ impl AppState {
             sessions: Arc::new(RwLock::new(sessions)),
             oauth_codes: Default::default(),
             oauth_clients: Arc::new(RwLock::new(persisted.dcr_clients)),
-            oauth_access_tokens: Default::default(),
+            oauth_access_tokens: Arc::new(RwLock::new(persisted.access_tokens)),
             oauth_refresh_tokens: Arc::new(RwLock::new(persisted.refresh_tokens)),
             failed_logins: Default::default(),
             shell_slots,
@@ -136,6 +142,13 @@ impl AppState {
 
     pub async fn persist_durable(&self) -> Result<(), String> {
         let sessions = self.sessions.read().await.clone();
+        let access_tokens = self
+            .oauth_access_tokens
+            .read()
+            .await
+            .iter()
+            .map(|(key, token)| (durable_access_token_key(key), token.clone()))
+            .collect();
         let refresh_tokens = self.oauth_refresh_tokens.read().await.clone();
         let dcr_clients = self
             .oauth_clients
@@ -148,11 +161,27 @@ impl AppState {
         self.durable
             .save(DurableSnapshot {
                 version: 1,
+                access_tokens,
                 refresh_tokens,
                 sessions,
                 dcr_clients,
             })
             .await
+    }
+}
+
+pub(crate) fn access_token_lookup_key(token: &str) -> String {
+    format!(
+        "{ACCESS_TOKEN_FINGERPRINT_PREFIX}{}",
+        token_fingerprint(token)
+    )
+}
+
+fn durable_access_token_key(key: &str) -> String {
+    if key.starts_with(ACCESS_TOKEN_FINGERPRINT_PREFIX) {
+        key.to_string()
+    } else {
+        access_token_lookup_key(key)
     }
 }
 
@@ -168,7 +197,7 @@ fn remember_bounded(owned: &mut VecDeque<String>, session_id: &str, limit: usize
 
 #[cfg(test)]
 mod tests {
-    use super::remember_bounded;
+    use super::{access_token_lookup_key, remember_bounded};
     use std::collections::VecDeque;
 
     #[test]
@@ -186,5 +215,13 @@ mod tests {
             sessions,
             VecDeque::from(["three".to_string(), "two".to_string()])
         );
+    }
+
+    #[test]
+    fn persisted_access_token_keys_are_one_way_fingerprints() {
+        let token = "mcp_access_secret-canary";
+        let key = access_token_lookup_key(token);
+        assert!(key.starts_with("sha256:"));
+        assert!(!key.contains(token));
     }
 }
