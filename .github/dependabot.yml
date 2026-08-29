@@ -4,7 +4,29 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Keep patch/security-compatible updates flowing automatically, but treat
+    # 0.x minor jumps as deliberate migrations because they may be breaking.
+    ignore:
+      - dependency-name: reqwest
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+      - dependency-name: tower-http
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Node runtime major upgrades are deliberate compatibility work.
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
+      # The builder intentionally tracks the project's declared Rust MSRV.
+      - dependency-name: rust
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
