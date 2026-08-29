@@ -14,6 +14,14 @@ use url::Url;
 const CDP: &str = "http://127.0.0.1:9222";
 pub const HELPER_PROTOCOL: &str = "mcp-browser-helper/2";
 
+pub async fn warm_browser_worker(state: &AppState) -> Result<(), String> {
+    if !state.config.tools.browser {
+        return Ok(());
+    }
+    let mut worker_guard = state.browser_worker.lock().await;
+    ensure_browser_worker(state, &mut worker_guard).await
+}
+
 pub async fn run_browser_action(
     state: &AppState,
     action: &str,
@@ -222,16 +230,7 @@ async fn run_script(
     }
 
     let mut worker_guard = state.browser_worker.lock().await;
-    let needs_spawn = match worker_guard.as_mut() {
-        Some(worker) => match worker.child.try_wait() {
-            Ok(None) => false,
-            Ok(Some(_)) | Err(_) => true,
-        },
-        None => true,
-    };
-    if needs_spawn {
-        *worker_guard = Some(spawn_browser_worker(state).await?);
-    }
+    ensure_browser_worker(state, &mut worker_guard).await?;
 
     let request_id = {
         let worker = worker_guard
@@ -290,6 +289,23 @@ async fn run_script(
         .and_then(Value::as_str)
         .unwrap_or("browser worker returned an unknown error")
         .to_string())
+}
+
+async fn ensure_browser_worker(
+    state: &AppState,
+    worker_slot: &mut Option<BrowserWorker>,
+) -> Result<(), String> {
+    let needs_spawn = match worker_slot.as_mut() {
+        Some(worker) => match worker.child.try_wait() {
+            Ok(None) => false,
+            Ok(Some(_)) | Err(_) => true,
+        },
+        None => true,
+    };
+    if needs_spawn {
+        *worker_slot = Some(spawn_browser_worker(state).await?);
+    }
+    Ok(())
 }
 
 async fn spawn_browser_worker(state: &AppState) -> Result<BrowserWorker, String> {
