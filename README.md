@@ -2,40 +2,46 @@
 
 MCP Bridge is a Rust gateway that connects MCP clients such as ChatGPT to a local agent backend and, when explicitly enabled, to the owner's desktop environment.
 
-Version 0.5.2 is designed around two goals:
+Current package version: **0.5.2**.
 
-1. **Personal desktop automation**: keep a deliberately small trusted surface: unrestricted shell access, browser control, and a synchronous backend prompt bridge. Applications, audio, and coding CLIs remain accessible through the trusted shell when needed.
-2. **Safe boundaries**: do not leak bridge credentials into child processes, constrain filesystem access to a configured workspace, bound process output/concurrency, terminate timed-out process trees, and keep authentication/session ownership explicit.
+The project is intentionally built around a small public MCP surface, strong authentication boundaries, restart-safe OAuth state, and a guarded self-deployment path for personal workstations.
 
-The MCP protocol layer uses the official Rust MCP SDK (`rmcp`) and currently negotiates every protocol revision supported by that SDK, including `2026-07-28` and legacy `2025-03-26` clients.
+## Highlights
 
-## Tools
+- **Five-tool public surface** — three backend tools plus optional `shell` and `browser`; no public async/session-management wrappers.
+- **Trusted desktop automation** — authenticated clients can use unrestricted host Bash and a local Chrome/Chromium CDP session when explicitly enabled.
+- **Restart-safe OAuth** — PKCE, CIMD, DCR fallback, rotating refresh tokens, durable token fingerprints/metadata, and standards-based invalid-token recovery.
+- **Bounded execution** — child environments are sanitized, output is capped, concurrency is limited, and timed-out process trees are terminated.
+- **Deployment provenance** — `/` reports version, build commit, dirty state, and browser-helper protocol; `/live` and `/ready` expose liveness/readiness.
+- **Rollback-safe self-update** — `scripts/deploy-user-service.sh` synchronizes `main`, packages the release, restarts the user service, verifies the live build, and rolls back on failure.
 
-Core backend tools are always available when the backend is configured:
+The MCP protocol layer uses the official Rust MCP SDK (`rmcp`) and negotiates the protocol revisions supported by the pinned SDK, including current and legacy MCP clients used by this project.
 
-| Tool | Purpose |
-| --- | --- |
-| `bridge_prompt` | Send a prompt to the configured local agent backend and wait for the result |
-| `bridge_read_file` | Read an existing file inside `BRIDGE_WORKDIR` through the backend |
-| `bridge_search` | Search the configured backend workspace |
+## MCP tools
 
-Optional host/desktop tools:
+The intended public surface is deliberately small:
 
-| Tool | Purpose | Switch |
+| Tool | Purpose | Availability |
 | --- | --- | --- |
+| `bridge_prompt` | Send a prompt to the configured local agent backend and wait for the result | Backend configured |
+| `bridge_read_file` | Read an existing file inside `BRIDGE_WORKDIR` through the backend | Backend configured |
+| `bridge_search` | Search the configured backend workspace | Backend configured |
 | `shell` | Run unrestricted host Bash commands with a sanitized environment, bounded output, timeout, process-tree termination, and concurrency limiting | `MCP_ENABLE_SHELL=true` |
 | `browser` | Control a local Chrome/Chromium CDP session | `MCP_ENABLE_BROWSER=true` |
 
 `MCP_ENABLE_HOST_TOOLS=true` remains supported for 0.3 compatibility. In the `personal-desktop` profile it enables the optional shell and browser groups unless an individual switch overrides the default.
 
+The project intentionally does **not** expose public async/session-management or agent-wrapper tools. Backend session ownership is internal to the bridge.
+
 ## Requirements
 
-Only install what your deployment uses:
+Install only what your deployment uses:
 
-- Rust 1.88 or newer
+- Rust **1.88** or newer
 - Bash for `shell`
 - A compatible backend service for `bridge_prompt`, `bridge_read_file`, and `bridge_search`
 - Google Chrome/Chromium, Node.js, and Playwright for `browser`
+- `systemd --user`, `curl`, `ss`, Python 3, and `flock` for the guarded native deployment helper
 - `cloudflared` only when an external MCP client must reach the bridge through a tunnel
 
 The backend adapter expects these local HTTP endpoints:
@@ -54,7 +60,11 @@ cd mcp-bridge
 cargo build --release
 ```
 
-The binary is `target/release/mcp-bridge` on Linux/macOS.
+The native release binary is:
+
+```text
+target/release/mcp-bridge
+```
 
 ## Quick start: personal desktop
 
@@ -72,6 +82,90 @@ export MCP_ENABLE_HOST_TOOLS=true
 The default listener is `127.0.0.1:3000`.
 
 `BRIDGE_WORKDIR="$HOME"` is appropriate when the goal is to let the assistant work across projects in the user's home directory. Use a narrower project directory when broad access is unnecessary.
+
+## Safe self-update / deployment
+
+For a native installation managed by `mcp-bridge.service`, the **official update path** is the checked-in guarded deployment helper:
+
+```bash
+bash scripts/deploy-user-service.sh
+```
+
+Do not manually rebuild a new binary underneath the running service when this workflow is available.
+
+### What the deployment helper does
+
+The helper performs the complete deployment transaction:
+
+1. Requires a clean working tree on `main`.
+2. Fetches `origin/main` and allows only a fast-forward synchronization.
+3. Refuses to deploy if local `HEAD` does not equal `origin/main` after synchronization.
+4. Captures the currently running bridge executable and browser helper for rollback.
+5. Builds/packages the release through `scripts/package-release.sh`.
+6. Restarts `mcp-bridge.service`.
+7. Confirms the previous PID exited and the service is active with a new live process.
+8. Confirms systemd is running the freshly built executable rather than a stale/deleted image.
+9. Confirms exactly one TCP listener belongs to the bridge process.
+10. Verifies `/live` and `/ready` return HTTP 200.
+11. Verifies root build provenance: package version, expected Git commit, `dirty=false`, and browser helper protocol `mcp-browser-helper/2`.
+12. If restart or verification fails, restores the previous packaged executable/helper and attempts to bring the previous service back to liveness.
+
+The deployment state directory defaults to:
+
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/mcp-bridge
+```
+
+It is created with restrictive permissions and contains deployment lock/rollback material rather than application secrets.
+
+### Updating through MCP itself
+
+The existing `shell` tool is intentionally the maintenance entry point; there is no separate public reset/restart/update MCP tool.
+
+An authenticated client can run:
+
+```bash
+bash scripts/deploy-user-service.sh
+```
+
+If that command is executing **inside the bridge's own systemd service cgroup**, the script does not restart the service from the same process that must report the tool result. Instead, it hands the restart/verification phase to a detached transient `systemd --user` unit and returns first. This prevents a self-update from killing its own deploy worker halfway through the transaction.
+
+After the MCP connection is re-established, verify the service if desired:
+
+```bash
+systemctl --user is-active mcp-bridge.service
+curl --fail http://127.0.0.1:3000/live
+curl --fail http://127.0.0.1:3000/ready
+curl --fail http://127.0.0.1:3000/
+```
+
+If your service listens on a different address, use that listener instead of `127.0.0.1:3000`.
+
+### systemd service layout
+
+The repository includes `deploy/mcp-bridge.service` as the reference native user service. The checked-in unit currently assumes:
+
+```text
+Repository:   ~/opencode-mcp-bridge-rust
+Environment:  ~/.config/mcp-bridge/env
+Binary:       ~/opencode-mcp-bridge-rust/target/release/mcp-bridge
+```
+
+If you cloned the repository somewhere else, adjust `WorkingDirectory` and `ExecStart` in your installed user unit before using the deployment helper. The helper itself discovers its repository root from its own path, but it deliberately verifies that the running service points at that repository's packaged release binary.
+
+Typical user-service management commands are:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now mcp-bridge.service
+systemctl --user status mcp-bridge.service
+```
+
+### MCP tool-schema changes
+
+Normal implementation updates, OAuth fixes, rebuilds, and service restarts do **not** require a new MCP tool definition.
+
+Keep `shell` stable and use it for maintenance. If a release actually adds/removes/renames tools or changes their input schemas, MCP clients that cache tool definitions may need their app/tool snapshot refreshed or reconnected after the new server is live.
 
 ## Profiles
 
@@ -246,6 +340,8 @@ The built-in OAuth flow provides:
 - high-entropy authorization/access/refresh tokens
 - one-time authorization codes
 - refresh-token rotation and `offline_access` scope support
+- restart-safe access authorization through durable SHA-256 token fingerprints/metadata
+- standards-based `invalid_token` Bearer challenges so capable clients can refresh and retry
 - expired-state cleanup
 - failed-login throttling
 - no-store OAuth responses and restrictive login-page security headers
@@ -267,7 +363,9 @@ Configuration:
 
 Current MCP clients can use CIMD without pre-registration: the bridge fetches the HTTPS `client_id` metadata document, verifies that its embedded `client_id` exactly matches the URL, and accepts only redirect URIs declared by that document. Older clients may use the advertised `/oauth/register` Dynamic Client Registration endpoint.
 
-OAuth authorization codes remain short-lived and in memory. Unexpired access-token metadata, rotating refresh-token metadata, Dynamic Client Registration records, and bridge-owned backend-session ownership are stored in the durable state file so normal bridge restarts preserve active OAuth authorization and do not orphan resumable backend sessions. Access and refresh token values are never written to disk; durable token records are keyed by SHA-256 fingerprints and written atomically with restrictive permissions on Unix.
+OAuth authorization codes remain short-lived and in memory. Unexpired access-token metadata, rotating refresh-token metadata, Dynamic Client Registration records, and bridge-owned backend-session ownership are stored in the durable state file so normal bridge restarts preserve active OAuth authorization and do not orphan resumable backend sessions.
+
+Access and refresh token values are never written to durable state in plaintext. Durable token records are keyed by SHA-256 fingerprints and written atomically with restrictive permissions on Unix.
 
 ## Cloudflare Tunnel
 
@@ -291,6 +389,16 @@ ingress:
     service: http://127.0.0.1:3000
   - service: http_status:404
 ```
+
+## Health and build provenance
+
+- `/live` — process liveness only; HTTP 200 while the bridge is running.
+- `/ready` — bridge + backend readiness; HTTP 503 when the backend is unavailable.
+- `/health` — compatibility alias for `/ready`.
+
+The root `/` response includes package version, build commit/dirty state, and browser-helper protocol so deployment tooling can detect version skew.
+
+A healthy production/native deployment should report the expected Git commit, `dirty=false`, and browser helper protocol `mcp-browser-helper/2`.
 
 ## Configuration reference
 
@@ -339,26 +447,6 @@ ingress:
 
 MCP/HTTP request bodies are hard-limited to 1 MiB before RMCP parsing. Oversized requests return HTTP `413 Payload Too Large`.
 
-## Health endpoints
-
-- `/live` — process liveness only, HTTP 200 while the bridge is running.
-- `/ready` — bridge + backend readiness, HTTP 503 when the backend is unavailable.
-- `/health` — compatibility alias for `/ready`.
-
-The root `/` response includes package version, build commit/dirty state, and browser-helper protocol so deployments can detect version skew.
-
-## Native user-service deployment
-
-When `deploy/mcp-bridge.service` is installed as the user service, use the guarded deployment helper instead of rebuilding underneath a running process:
-
-```bash
-bash scripts/deploy-user-service.sh
-```
-
-The helper requires a clean working tree synchronized with `origin/main`, captures the current executable and browser helper for rollback, creates the release package, restarts `mcp-bridge.service`, verifies that systemd is running the newly built executable rather than a deleted/stale image, confirms there is exactly one bridge listener, checks `/live` and `/ready`, and confirms the root provenance matches the deployed Git commit with `dirty=false` and browser helper protocol `mcp-browser-helper/2`. If restart or verification fails, it restores the previous package and brings the service back to liveness.
-
-When the command is run through the bridge's own `shell` tool, it first schedules a detached transient user-systemd worker and returns before the bridge restart. After the MCP connection is re-established, check `systemctl --user is-active mcp-bridge.service` and the root endpoint to confirm the handoff completed. No MCP schema refresh is needed because the public `shell` tool is unchanged.
-
 ## Docker
 
 ```bash
@@ -366,6 +454,7 @@ docker build \
   --build-arg BUILD_COMMIT="$(git rev-parse --short=12 HEAD)" \
   --build-arg BUILD_DIRTY="$(test -z "$(git status --porcelain)" && echo false || echo true)" \
   -t mcp-bridge .
+
 docker run --rm \
   -p 127.0.0.1:3000:3000 \
   -e MCP_TOKEN="$(openssl rand -hex 32)" \
@@ -376,7 +465,9 @@ docker run --rm \
   mcp-bridge
 ```
 
-The image runs as an unprivileged `bridge` user with `MCP_PROFILE=server-secure`, `/work` as the default confined work directory, and `/state/state.json` as durable state. Mount `/state` persistently if OAuth/session continuity must survive container recreation. Desktop/CDP tools are primarily intended for native personal-workstation use; containerized desktop control needs explicit host integration and should not be enabled casually.
+The image runs as an unprivileged `bridge` user with `MCP_PROFILE=server-secure`, `/work` as the default confined work directory, and `/state/state.json` as durable state. Mount `/state` persistently if OAuth/session continuity must survive container recreation.
+
+Desktop/CDP tools are primarily intended for native personal-workstation use; containerized desktop control needs explicit host integration and should not be enabled casually.
 
 ## Verification
 
@@ -395,7 +486,7 @@ scripts/package-release.sh
 cargo audit
 ```
 
-The repository CI runs the same Rust/Node checks plus the end-to-end MCP/OAuth integration tests included in `cargo test`, a release build, and a RustSec dependency audit.
+The repository CI runs the Rust/Node checks, end-to-end MCP/OAuth integration tests included in `cargo test`, browser OAuth regression, release packaging checks, shell-script syntax checks, Clippy with warnings denied, and a RustSec dependency audit.
 
 ## Security model
 
@@ -403,12 +494,13 @@ MCP Bridge is intentionally powerful. Enabling host tools gives an authenticated
 
 For a personal workstation:
 
-- use a strong token or OAuth password
-- expose only through authenticated HTTPS
-- keep backend/CDP ports private
+- use a strong bearer token or OAuth password
+- expose the bridge only through authenticated HTTPS when remote access is required
+- keep backend and Chrome CDP ports private
 - use a dedicated Chrome automation profile when practical
 - set `BRIDGE_WORKDIR` no broader than necessary
-- review which host tool groups are enabled
+- enable only the host tool groups you actually need
 - never treat unrestricted shell as a sandbox
+- keep the durable state directory private to the bridge user
 
 See [SECURITY.md](SECURITY.md) for the detailed threat model and reporting process.
