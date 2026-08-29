@@ -74,6 +74,7 @@ pub async fn require_mcp_auth(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
+    let presented_bearer = bearer_token(request.headers()).is_some();
     let path_token = request
         .uri()
         .path()
@@ -84,11 +85,28 @@ pub async fn require_mcp_auth(
             request.extensions_mut().insert(principal);
             next.run(request).await
         }
-        None => unauthorized_response(&state),
+        None => unauthorized_response_with_error(&state, presented_bearer),
     }
 }
 
 pub fn unauthorized_response(state: &AppState) -> Response {
+    unauthorized_response_with_error(state, false)
+}
+
+fn bearer_challenge(metadata_url: Option<&str>, invalid_token: bool) -> HeaderValue {
+    let mut challenge = metadata_url
+        .map(|url| {
+            format!(r#"Bearer realm="mcp-bridge", resource_metadata="{url}", scope="mcp:tools""#)
+        })
+        .unwrap_or_else(|| r#"Bearer realm="mcp-bridge""#.to_string());
+    if invalid_token {
+        challenge.push_str(r#", error="invalid_token""#);
+    }
+    HeaderValue::try_from(challenge)
+        .unwrap_or_else(|_| HeaderValue::from_static(r#"Bearer realm="mcp-bridge""#))
+}
+
+fn unauthorized_response_with_error(state: &AppState, invalid_token: bool) -> Response {
     let metadata_url = state
         .config
         .oauth
@@ -101,17 +119,12 @@ pub fn unauthorized_response(state: &AppState) -> Response {
         "id": null,
         "error": {"code": -32001, "message": "Unauthorized"}
     }));
-    let challenge = metadata_url
-        .as_ref()
-        .map(|url| {
-            format!(r#"Bearer realm="mcp-bridge", resource_metadata="{url}", scope="mcp:tools""#)
-        })
-        .unwrap_or_else(|| r#"Bearer realm="mcp-bridge""#.to_string());
-    let challenge = HeaderValue::try_from(challenge)
-        .unwrap_or_else(|_| HeaderValue::from_static(r#"Bearer realm="mcp-bridge""#));
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, challenge)],
+        [(
+            header::WWW_AUTHENTICATE,
+            bearer_challenge(metadata_url.as_deref(), invalid_token),
+        )],
         body,
     )
         .into_response()
@@ -119,7 +132,7 @@ pub fn unauthorized_response(state: &AppState) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::bearer_token;
+    use super::{bearer_challenge, bearer_token};
     use axum::http::{HeaderMap, HeaderValue, header};
 
     #[test]
@@ -130,5 +143,18 @@ mod tests {
             HeaderValue::from_static("bEaReR abc"),
         );
         assert_eq!(bearer_token(&headers), Some("abc"));
+    }
+
+    #[test]
+    fn bearer_challenge_distinguishes_missing_and_invalid_credentials() {
+        let metadata = "https://bridge.example/.well-known/oauth-protected-resource";
+        let missing = bearer_challenge(Some(metadata), false);
+        let invalid = bearer_challenge(Some(metadata), true);
+        let missing = missing.to_str().unwrap();
+        let invalid = invalid.to_str().unwrap();
+
+        assert!(missing.contains(r#"resource_metadata="https://bridge.example/.well-known/oauth-protected-resource""#));
+        assert!(!missing.contains("invalid_token"));
+        assert!(invalid.contains(r#"error="invalid_token""#));
     }
 }
