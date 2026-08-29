@@ -267,7 +267,7 @@ Configuration:
 
 Current MCP clients can use CIMD without pre-registration: the bridge fetches the HTTPS `client_id` metadata document, verifies that its embedded `client_id` exactly matches the URL, and accepts only redirect URIs declared by that document. Older clients may use the advertised `/oauth/register` Dynamic Client Registration endpoint.
 
-OAuth authorization codes and short-lived access tokens remain in memory. Rotating refresh-token metadata, Dynamic Client Registration records, and bridge-owned backend-session ownership are stored in the durable state file so normal bridge restarts do not force a full OAuth login or orphan resumable backend sessions. Refresh token values are never written to disk; the durable store keys them by SHA-256 fingerprint and writes atomically with restrictive permissions on Unix.
+OAuth authorization codes remain short-lived and in memory. Unexpired access-token metadata, rotating refresh-token metadata, Dynamic Client Registration records, and bridge-owned backend-session ownership are stored in the durable state file so normal bridge restarts preserve active OAuth authorization and do not orphan resumable backend sessions. Access and refresh token values are never written to disk; durable token records are keyed by SHA-256 fingerprints and written atomically with restrictive permissions on Unix.
 
 ## Cloudflare Tunnel
 
@@ -311,7 +311,7 @@ ingress:
 | `MCP_ENABLE_BROWSER` | profile/master default | Enable `browser` |
 | `MCP_BROWSER_SCRIPT` | auto-detected | Browser helper path; protocol compatibility is checked before use |
 | `MCP_CHILD_ENV_ALLOW` | unset | Extra comma-separated non-secret child environment names |
-| `MCP_STATE_FILE` | XDG/user state path | Durable refresh-token fingerprints, DCR clients, and session ownership; `:memory:` disables persistence |
+| `MCP_STATE_FILE` | XDG/user state path | Durable OAuth token fingerprints/metadata, DCR clients, and session ownership; `:memory:` disables persistence |
 | `MCP_TRUST_PROXY` | `none` | `none` or `cloudflare`; forwarded IPs are trusted only from a loopback proxy |
 | `MCP_PUBLIC_URL` | unset | Public HTTPS OAuth origin |
 | `MCP_OAUTH_USERNAME` | `user` | Built-in OAuth login username |
@@ -328,8 +328,8 @@ ingress:
 | `MCP_OAUTH_CLIENT_METADATA_TIMEOUT_SECONDS` | `10` | DNS/fetch timeout for CIMD metadata |
 | `MCP_OAUTH_CLIENT_METADATA_MAX_BYTES` | `65536` | Maximum CIMD response size |
 | `MCP_OAUTH_CLIENT_METADATA_CACHE_TTL` | `300` | Default/maximum CIMD cache lifetime when cache headers permit |
-| `MCP_OAUTH_MAX_ACCESS_TOKENS` | `1024` | Maximum in-memory OAuth access tokens |
-| `MCP_OAUTH_MAX_REFRESH_TOKENS` | `1024` | Maximum in-memory OAuth refresh tokens |
+| `MCP_OAUTH_MAX_ACCESS_TOKENS` | `1024` | Maximum active OAuth access-token records |
+| `MCP_OAUTH_MAX_REFRESH_TOKENS` | `1024` | Maximum active OAuth refresh-token records |
 | `MCP_SHELL_TIMEOUT_SECONDS` | `30` | Shell timeout, bounded to 1–600 seconds |
 | `MCP_BROWSER_TIMEOUT_SECONDS` | `30` | Browser helper timeout, bounded to 1–300 seconds |
 | `MCP_STDOUT_LIMIT_BYTES` | `1048576` | Per-process captured stdout limit |
@@ -346,6 +346,16 @@ MCP/HTTP request bodies are hard-limited to 1 MiB before RMCP parsing. Oversized
 - `/health` — compatibility alias for `/ready`.
 
 The root `/` response includes package version, build commit/dirty state, and browser-helper protocol so deployments can detect version skew.
+
+## Native user-service deployment
+
+When `deploy/mcp-bridge.service` is installed as the user service, use the guarded deployment helper instead of rebuilding underneath a running process:
+
+```bash
+bash scripts/deploy-user-service.sh
+```
+
+The helper requires a clean working tree synchronized with `origin/main`, creates the release package, restarts `mcp-bridge.service`, verifies that systemd is running the newly built executable rather than a deleted/stale image, discovers the actual listening address, checks `/live` and `/ready`, and confirms the root provenance matches the deployed Git commit with `dirty=false` and browser helper protocol `mcp-browser-helper/2`.
 
 ## Docker
 
@@ -364,7 +374,7 @@ docker run --rm \
   mcp-bridge
 ```
 
-The image runs as an unprivileged `bridge` user with `MCP_PROFILE=server-secure`, `/work` as the default confined work directory, and `/state/state.json` as durable state. Mount `/state` persistently if OAuth refresh/session continuity must survive container recreation. Desktop/CDP tools are primarily intended for native personal-workstation use; containerized desktop control needs explicit host integration and should not be enabled casually.
+The image runs as an unprivileged `bridge` user with `MCP_PROFILE=server-secure`, `/work` as the default confined work directory, and `/state/state.json` as durable state. Mount `/state` persistently if OAuth/session continuity must survive container recreation. Desktop/CDP tools are primarily intended for native personal-workstation use; containerized desktop control needs explicit host integration and should not be enabled casually.
 
 ## Verification
 
@@ -378,6 +388,7 @@ NODE_PATH="$(npm root -g)" node tests/oauth_browser.cjs
 cargo clippy --locked --all-targets --all-features -- -D warnings
 node --check scripts/browser.cjs
 bash -n scripts/package-release.sh
+bash -n scripts/deploy-user-service.sh
 scripts/package-release.sh
 cargo audit
 ```
