@@ -1,10 +1,18 @@
 use crate::config::ProcessConfig;
-use std::{collections::HashMap, path::Path, process::Stdio, time::Duration};
+use std::{
+    collections::HashMap,
+    path::Path,
+    process::Stdio,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 use tokio::{
     io::AsyncReadExt,
     process::{Child, Command},
     task::JoinHandle,
 };
+
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub struct ProcessOutput {
@@ -23,12 +31,12 @@ impl ProcessOutput {
 
     pub fn render(&self) -> String {
         let stdout_suffix = if self.stdout_truncated {
-            "\n[stdout truncated]"
+            "\n[stdout truncated or stream left open]"
         } else {
             ""
         };
         let stderr_suffix = if self.stderr_truncated {
-            "\n[stderr truncated]"
+            "\n[stderr truncated or stream left open]"
         } else {
             ""
         };
@@ -43,6 +51,14 @@ impl ProcessOutput {
         )
     }
 }
+
+#[derive(Default)]
+struct Capture {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+type SharedCapture = Arc<StdMutex<Capture>>;
 
 pub fn safe_child_environment(config: &ProcessConfig) -> HashMap<String, String> {
     config
@@ -136,14 +152,16 @@ async fn run_command(
     };
 
     let pid = child.id();
-    let stdout_task = child
-        .stdout
-        .take()
-        .map(|stdout| tokio::spawn(read_bounded(stdout, stdout_limit)));
-    let stderr_task = child
-        .stderr
-        .take()
-        .map(|stderr| tokio::spawn(read_bounded(stderr, stderr_limit)));
+    let stdout_capture = new_capture(stdout_limit);
+    let stderr_capture = new_capture(stderr_limit);
+    let stdout_task = child.stdout.take().map(|stdout| {
+        let capture = stdout_capture.clone();
+        tokio::spawn(read_bounded_into(stdout, stdout_limit, capture))
+    });
+    let stderr_task = child.stderr.take().map(|stderr| {
+        let capture = stderr_capture.clone();
+        tokio::spawn(read_bounded_into(stderr, stderr_limit, capture))
+    });
 
     let (code, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(Ok(status)) => (status.code(), false),
@@ -153,6 +171,8 @@ async fn run_command(
                 false,
                 stdout_task,
                 stderr_task,
+                stdout_capture,
+                stderr_capture,
                 Some(error.to_string()),
             )
             .await;
@@ -164,18 +184,31 @@ async fn run_command(
         }
     };
 
-    output_from_tasks(code, timed_out, stdout_task, stderr_task, None).await
+    output_from_tasks(
+        code,
+        timed_out,
+        stdout_task,
+        stderr_task,
+        stdout_capture,
+        stderr_capture,
+        None,
+    )
+    .await
 }
 
 async fn output_from_tasks(
     code: Option<i32>,
     timed_out: bool,
-    stdout_task: Option<JoinHandle<(Vec<u8>, bool)>>,
-    stderr_task: Option<JoinHandle<(Vec<u8>, bool)>>,
+    stdout_task: Option<JoinHandle<()>>,
+    stderr_task: Option<JoinHandle<()>>,
+    stdout_capture: SharedCapture,
+    stderr_capture: SharedCapture,
     extra_error: Option<String>,
 ) -> ProcessOutput {
-    let (stdout, stdout_truncated) = join_reader(stdout_task).await;
-    let (mut stderr, stderr_truncated) = join_reader(stderr_task).await;
+    finish_reader(stdout_task, &stdout_capture).await;
+    finish_reader(stderr_task, &stderr_capture).await;
+    let (stdout, stdout_truncated) = capture_text(&stdout_capture);
+    let (mut stderr, stderr_truncated) = capture_text(&stderr_capture);
     if let Some(error) = extra_error {
         if !stderr.is_empty() {
             stderr.push('\n');
@@ -192,43 +225,84 @@ async fn output_from_tasks(
     }
 }
 
-async fn join_reader(task: Option<JoinHandle<(Vec<u8>, bool)>>) -> (String, bool) {
-    let Some(task) = task else {
-        return (String::new(), false);
+fn new_capture(limit: usize) -> SharedCapture {
+    Arc::new(StdMutex::new(Capture {
+        bytes: Vec::with_capacity(limit.min(64 * 1024)),
+        truncated: false,
+    }))
+}
+
+async fn finish_reader(task: Option<JoinHandle<()>>, capture: &SharedCapture) {
+    let Some(mut task) = task else {
+        return;
     };
-    match task.await {
-        Ok((bytes, truncated)) => (String::from_utf8_lossy(&bytes).into_owned(), truncated),
-        Err(error) => (format!("output reader failed: {error}"), false),
+    match tokio::time::timeout(OUTPUT_DRAIN_GRACE, &mut task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => append_capture_error(capture, &format!("output reader failed: {error}")),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            let mut locked = lock_capture(capture);
+            locked.truncated = true;
+        }
     }
 }
 
-async fn read_bounded<R>(mut reader: R, limit: usize) -> (Vec<u8>, bool)
+fn append_capture_error(capture: &SharedCapture, message: &str) {
+    let mut locked = lock_capture(capture);
+    if !locked.bytes.is_empty() {
+        locked.bytes.push(b'\n');
+    }
+    locked.bytes.extend_from_slice(message.as_bytes());
+}
+
+fn capture_text(capture: &SharedCapture) -> (String, bool) {
+    let locked = lock_capture(capture);
+    (
+        String::from_utf8_lossy(&locked.bytes).into_owned(),
+        locked.truncated,
+    )
+}
+
+fn lock_capture(capture: &SharedCapture) -> std::sync::MutexGuard<'_, Capture> {
+    capture
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn read_bounded_into<R>(mut reader: R, limit: usize, capture: SharedCapture)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut captured = Vec::with_capacity(limit.min(64 * 1024));
     let mut buffer = [0u8; 8192];
-    let mut truncated = false;
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) => break,
             Ok(read) => {
-                let remaining = limit.saturating_sub(captured.len());
+                let mut locked = lock_capture(&capture);
+                let remaining = limit.saturating_sub(locked.bytes.len());
                 let keep = remaining.min(read);
-                captured.extend_from_slice(&buffer[..keep]);
+                locked.bytes.extend_from_slice(&buffer[..keep]);
                 if keep < read {
-                    truncated = true;
+                    locked.truncated = true;
                 }
             }
             Err(error) => {
-                let message = format!("\n[output read error: {error}]");
-                let remaining = limit.saturating_sub(captured.len());
-                captured.extend_from_slice(&message.as_bytes()[..message.len().min(remaining)]);
+                append_capture_error(&capture, &format!("[output read error: {error}]"));
                 break;
             }
         }
     }
-    (captured, truncated)
+}
+
+async fn read_bounded<R>(reader: R, limit: usize) -> (Vec<u8>, bool)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let capture = new_capture(limit);
+    read_bounded_into(reader, limit, capture.clone()).await;
+    let locked = lock_capture(&capture);
+    (locked.bytes.clone(), locked.truncated)
 }
 
 #[cfg(unix)]
@@ -301,6 +375,19 @@ mod tests {
         let output = super::run_bash("sleep 30 & wait", root.path(), &cfg).await;
         assert!(output.timed_out);
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn detached_background_child_does_not_hold_tool_response_open() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config(&["PATH", "HOME"]);
+        cfg.shell_timeout = Duration::from_secs(5);
+        let started = std::time::Instant::now();
+        let output = super::run_bash("printf launched; sleep 2 &", root.path(), &cfg).await;
+        assert!(output.is_success());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(output.stdout.contains("launched"));
+        assert!(output.stdout_truncated || output.stderr_truncated);
     }
 
     #[test]
