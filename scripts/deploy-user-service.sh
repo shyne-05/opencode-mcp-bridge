@@ -11,64 +11,64 @@ fail() {
   exit 1
 }
 
-command -v git >/dev/null || fail "git is required"
-command -v systemctl >/dev/null || fail "systemctl is required"
-command -v curl >/dev/null || fail "curl is required"
-command -v ss >/dev/null || fail "ss is required"
-command -v python3 >/dev/null || fail "python3 is required"
+require_runtime_tools() {
+  command -v systemctl >/dev/null || fail "systemctl is required"
+  command -v curl >/dev/null || fail "curl is required"
+  command -v ss >/dev/null || fail "ss is required"
+  command -v python3 >/dev/null || fail "python3 is required"
+}
 
-[[ -z "$(git status --porcelain)" ]] || fail "working tree must be clean before deployment"
+verify_deployment() {
+  local expected_commit="$1"
+  local expected_version="$2"
+  local expected_exe="$3"
 
-git fetch --quiet origin main
-local_head="$(git rev-parse HEAD)"
-remote_head="$(git rev-parse origin/main)"
-[[ "$local_head" == "$remote_head" ]] || fail "local HEAD does not match origin/main"
+  require_runtime_tools
+  systemctl --user restart "$SERVICE"
+  systemctl --user is-active --quiet "$SERVICE" || fail "$SERVICE is not active after restart"
 
-scripts/package-release.sh
-expected_commit="$(git rev-parse --short=12 HEAD)"
-expected_version="$(awk -F '"' '$1 ~ /^version = / { print $2; exit }' Cargo.toml)"
-expected_exe="$ROOT/target/release/mcp-bridge"
+  local pid
+  pid="$(systemctl --user show "$SERVICE" --property=MainPID --value)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "$SERVICE has no running MainPID"
 
-systemctl --user restart "$SERVICE"
-systemctl --user is-active --quiet "$SERVICE" || fail "$SERVICE is not active after restart"
+  local running_exe
+  running_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  [[ "$running_exe" == "$expected_exe" ]] || fail "service is not running the freshly built release binary"
 
-pid="$(systemctl --user show "$SERVICE" --property=MainPID --value)"
-[[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "$SERVICE has no running MainPID"
+  local listen_addr
+  listen_addr="$(ss -H -ltnp 2>/dev/null | awk -v needle="pid=$pid," 'index($0, needle) { print $4; exit }')"
+  [[ -n "$listen_addr" ]] || fail "could not identify the bridge listening address for PID $pid"
 
-running_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-[[ "$running_exe" == "$expected_exe" ]] || fail "service is not running the freshly built release binary"
-
-listen_addr="$(ss -H -ltnp 2>/dev/null | awk -v needle="pid=$pid," 'index($0, needle) { print $4; exit }')"
-[[ -n "$listen_addr" ]] || fail "could not identify the bridge listening address for PID $pid"
-
-port="${listen_addr##*:}"
-host="${listen_addr%:*}"
-case "$host" in
-  '*'|'0.0.0.0'|'[::]') host='127.0.0.1' ;;
-esac
-if [[ "$host" == *:* && "$host" != \[*\] ]]; then
-  host="[$host]"
-fi
-base_url="http://$host:$port"
-
-for _ in {1..40}; do
-  if curl --fail --silent --show-error --max-time 2 "$base_url/live" >/dev/null 2>&1; then
-    break
+  local port host base_url
+  port="${listen_addr##*:}"
+  host="${listen_addr%:*}"
+  case "$host" in
+    '*'|'0.0.0.0'|'[::]') host='127.0.0.1' ;;
+  esac
+  if [[ "$host" == *:* && "$host" != \[*\] ]]; then
+    host="[$host]"
   fi
-  sleep 0.25
-done
-curl --fail --silent --show-error --max-time 2 "$base_url/live" >/dev/null || fail "/live is not healthy"
+  base_url="http://$host:$port"
 
-for _ in {1..40}; do
-  if curl --fail --silent --show-error --max-time 2 "$base_url/ready" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.25
-done
-curl --fail --silent --show-error --max-time 2 "$base_url/ready" >/dev/null || fail "/ready is not healthy"
+  for _ in {1..40}; do
+    if curl --fail --silent --show-error --max-time 2 "$base_url/live" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
+  curl --fail --silent --show-error --max-time 2 "$base_url/live" >/dev/null || fail "/live is not healthy"
 
-root_json="$(curl --fail --silent --show-error --max-time 2 "$base_url/")"
-ROOT_JSON="$root_json" EXPECTED_COMMIT="$expected_commit" EXPECTED_VERSION="$expected_version" python3 - <<'PY'
+  for _ in {1..40}; do
+    if curl --fail --silent --show-error --max-time 2 "$base_url/ready" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
+  curl --fail --silent --show-error --max-time 2 "$base_url/ready" >/dev/null || fail "/ready is not healthy"
+
+  local root_json
+  root_json="$(curl --fail --silent --show-error --max-time 2 "$base_url/")"
+  ROOT_JSON="$root_json" EXPECTED_COMMIT="$expected_commit" EXPECTED_VERSION="$expected_version" python3 - <<'PY'
 import json
 import os
 import sys
@@ -85,5 +85,45 @@ except (AssertionError, KeyError, TypeError, json.JSONDecodeError) as exc:
     raise SystemExit(1)
 PY
 
-printf 'MCP Bridge %s deployed at %s (PID %s, commit %s, dirty=false, helper=%s)\n' \
-  "$expected_version" "$base_url" "$pid" "$expected_commit" 'mcp-browser-helper/2'
+  printf 'MCP Bridge %s deployed at %s (PID %s, commit %s, dirty=false, helper=%s)\n' \
+    "$expected_version" "$base_url" "$pid" "$expected_commit" 'mcp-browser-helper/2'
+}
+
+if [[ "${1:-}" == "--worker" ]]; then
+  [[ $# -eq 4 ]] || fail "worker requires expected commit, version, and executable"
+  verify_deployment "$2" "$3" "$4"
+  exit 0
+fi
+
+command -v git >/dev/null || fail "git is required"
+command -v systemd-run >/dev/null || fail "systemd-run is required"
+[[ -z "$(git status --porcelain)" ]] || fail "working tree must be clean before deployment"
+[[ "$(git branch --show-current)" == "main" ]] || fail "deployment must run from the main branch"
+
+git fetch --quiet origin main
+git merge --ff-only origin/main >/dev/null
+[[ -z "$(git status --porcelain)" ]] || fail "working tree became dirty during synchronization"
+
+local_head="$(git rev-parse HEAD)"
+remote_head="$(git rev-parse origin/main)"
+[[ "$local_head" == "$remote_head" ]] || fail "local HEAD does not match origin/main"
+
+scripts/package-release.sh
+expected_commit="$(git rev-parse --short=12 HEAD)"
+expected_version="$(awk -F '"' '$1 ~ /^version = / { print $2; exit }' Cargo.toml)"
+expected_exe="$ROOT/target/release/mcp-bridge"
+
+if grep -Fq "$SERVICE" "/proc/$$/cgroup" 2>/dev/null; then
+  unit="mcp-bridge-deploy-$(date +%s)-$$"
+  systemd-run --user \
+    --unit="$unit" \
+    --collect \
+    --quiet \
+    bash "$ROOT/scripts/deploy-user-service.sh" \
+      --worker "$expected_commit" "$expected_version" "$expected_exe"
+  printf 'Deployment handed off to %s so %s can restart without killing the deploy worker.\n' \
+    "$unit.service" "$SERVICE"
+  exit 0
+fi
+
+verify_deployment "$expected_commit" "$expected_version" "$expected_exe"
