@@ -295,6 +295,7 @@ where
     }
 }
 
+#[cfg(test)]
 async fn read_bounded<R>(reader: R, limit: usize) -> (Vec<u8>, bool)
 where
     R: tokio::io::AsyncRead + Unpin,
