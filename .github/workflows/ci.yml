@@ -29,6 +29,7 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: node --check scripts/browser.cjs
       - run: bash -n scripts/package-release.sh
+      - run: bash -n scripts/deploy-user-service.sh
       - run: scripts/package-release.sh
 
   audit:
