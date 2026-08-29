@@ -2,6 +2,7 @@ mod auth;
 mod backend;
 mod browser;
 mod config;
+mod desktop;
 mod durable;
 mod oauth;
 mod process;
@@ -169,6 +170,7 @@ async fn main() {
         shell = state.config.tools.shell,
         browser = state.config.tools.browser,
         agent = state.config.tools.agent,
+        desktop = state.config.tools.desktop,
         "mcp-bridge started"
     );
     if state.config.allow_unauthenticated {

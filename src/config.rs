@@ -98,6 +98,7 @@ pub struct ToolConfig {
     pub shell: bool,
     pub browser: bool,
     pub agent: bool,
+    pub desktop: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +180,7 @@ impl Config {
             shell: env_bool("MCP_ENABLE_SHELL", defaults_enabled),
             browser: env_bool("MCP_ENABLE_BROWSER", defaults_enabled),
             agent: env_bool("MCP_ENABLE_AGENT", defaults_enabled),
+            desktop: env_bool("MCP_ENABLE_DESKTOP", defaults_enabled),
         };
 
         let oauth = OAuthConfig {
