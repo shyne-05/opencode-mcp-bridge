@@ -2,6 +2,12 @@
 
 All notable changes to MCP Bridge are documented here.
 
+## 0.5.2 — 2026-08-29
+
+### Removed
+
+- Removed the redundant native application-launch MCP wrapper. Trusted personal-desktop deployments use the existing `shell` capability for application and audio control, reducing the exposed tool surface to the capabilities that are actually needed.
+
 ## 0.5.1 — 2026-08-29
 
 ### Fixed

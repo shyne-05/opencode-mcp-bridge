@@ -1,6 +1,6 @@
 [package]
 name = "mcp-bridge"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "Secure, configurable MCP gateway for personal desktop and local agent automation"
 license = "MIT"
