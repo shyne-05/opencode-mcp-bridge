@@ -63,7 +63,6 @@ where
         .env_remove("MCP_ENABLE_SHELL")
         .env_remove("MCP_ENABLE_BROWSER")
         .env_remove("MCP_ENABLE_AGENT")
-        .env_remove("MCP_ENABLE_DESKTOP")
         .env_remove("MCP_AGENT_COMMAND")
         .env_remove("MCP_AGENT_KIND")
         .env_remove("MCP_TRUST_PROXY")

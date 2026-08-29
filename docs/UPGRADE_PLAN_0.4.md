@@ -71,9 +71,9 @@ The upgrade must improve security and maintainability **without weakening the pe
 
 ## Phase 6 — Desktop ergonomics
 
-1. Keep generic `shell` for advanced workflows, including audio control.
+1. Keep generic `shell` for advanced workflows, including application and audio control.
 2. Keep browser automation as a separate stateful CDP capability.
-3. Keep a narrow application-launch helper where it improves Flatpak and desktop-launcher resolution, but avoid duplicating shell functionality with native audio wrappers.
+3. Avoid duplicating shell functionality with separate native desktop/audio MCP wrappers.
 
 ## Phase 7 — Tests and verification
 
@@ -131,14 +131,14 @@ All planned phases have been implemented in the 0.4.0 source tree.
 Verified outcomes:
 
 - official RMCP protocol layer with current and legacy negotiation
-- 11 tools in the trusted `personal-desktop` profile when host tools are enabled
+- 10 tools in the trusted `personal-desktop` profile when host tools are enabled
 - 7 core tools in `server-secure` by default
 - sanitized child environments retain required desktop session variables without exposing `MCP_*` credentials
 - bounded process output, process-group timeout termination, and tool concurrency limits
 - canonical backend read/search confinement with traversal and symlink escape rejection, plus persistent session ownership and real execution status
 - OAuth authorization-code + PKCE flow, CIMD client discovery, DCR fallback, access-token authentication, offline access, durable hashed refresh-token rotation, expired-state cleanup, bounded token/client state, and trusted-peer throttling
 - static bearer-token and URL-path-token compatibility
-- safe application launching and trusted shell workflows retain Spotify/application launch and PipeWire audio control
+- trusted shell workflows retain Spotify/application launch and PipeWire audio control
 - current Playwright browser snapshot support
 - formatter, locked check, unit tests, clippy `-D warnings`, Node syntax validation, locked release build, and RustSec audit gates
 
