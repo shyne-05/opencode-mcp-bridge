@@ -47,6 +47,31 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
         .await
         .expect("unauthorized request should complete");
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    let missing_challenge = unauthorized
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("unauthorized response should advertise bearer authentication")
+        .to_str()
+        .unwrap();
+    assert!(missing_challenge.starts_with("Bearer "));
+    assert!(!missing_challenge.contains("invalid_token"));
+
+    let invalid = client
+        .post(&mcp)
+        .bearer_auth("invalid-integration-test-token")
+        .header(header::CONTENT_TYPE, "application/json")
+        .json(&json!({"jsonrpc":"2.0","id":2,"method":"ping"}))
+        .send()
+        .await
+        .expect("invalid bearer request should complete");
+    assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    let invalid_challenge = invalid
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("invalid bearer response should include a challenge")
+        .to_str()
+        .unwrap();
+    assert!(invalid_challenge.contains(r#"error="invalid_token""#));
 
     let discover = client
         .post(&mcp)
@@ -55,7 +80,7 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header("MCP-Protocol-Version", "2026-07-28")
         .header("Mcp-Method", "server/discover")
-        .json(&discover_body(2))
+        .json(&discover_body(3))
         .send()
         .await
         .expect("discover request should complete");
@@ -75,7 +100,7 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header("MCP-Protocol-Version", "2026-07-28")
         .header("Mcp-Method", "server/discover")
-        .json(&discover_body(3))
+        .json(&discover_body(4))
         .send()
         .await
         .expect("path-token discover should complete");
@@ -88,7 +113,7 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
         .header(header::ACCEPT, "application/json, text/event-stream")
         .json(&json!({
             "jsonrpc":"2.0",
-            "id":4,
+            "id":5,
             "method":"initialize",
             "params":{
                 "protocolVersion":"2025-03-26",
@@ -132,7 +157,7 @@ async fn authenticates_and_supports_current_and_legacy_mcp_clients() {
         .header("Mcp-Session-Id", &session_id)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
-        .json(&json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}))
+        .json(&json!({"jsonrpc":"2.0","id":6,"method":"tools/list","params":{}}))
         .send()
         .await
         .expect("tools/list should complete");
