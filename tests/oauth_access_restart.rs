@@ -142,7 +142,10 @@ async fn oauth_access_token_survives_bridge_restart_without_plaintext_persistenc
         .unwrap();
     let access_token = token["access_token"].as_str().unwrap().to_string();
 
-    assert_eq!(discover(&bridge.base_url, &access_token).await, StatusCode::OK);
+    assert_eq!(
+        discover(&bridge.base_url, &access_token).await,
+        StatusCode::OK
+    );
     let persisted = std::fs::read_to_string(&state_file).unwrap();
     assert!(!persisted.contains(&access_token));
     assert!(!persisted.contains("mcp_access_"));
