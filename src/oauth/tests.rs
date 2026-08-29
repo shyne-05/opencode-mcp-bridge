@@ -52,10 +52,16 @@ fn validates_known_chatgpt_cimd_shape() {
 #[test]
 fn validates_redirect_uri_security_and_legacy_chatgpt_callbacks() {
     assert!(validate_redirect_uri_syntax("https://chatgpt.com/callback").is_ok());
+    assert!(validate_redirect_uri_syntax("https://example.com:8443/callback").is_ok());
+    assert!(validate_redirect_uri_syntax("http://localhost/callback").is_ok());
     assert!(validate_redirect_uri_syntax("http://localhost:3000/callback").is_ok());
     assert!(validate_redirect_uri_syntax("http://127.0.0.1:3000/callback").is_ok());
+    assert!(validate_redirect_uri_syntax("http://[::1]:49152/callback").is_ok());
     assert!(validate_redirect_uri_syntax("http://example.com/callback").is_err());
     assert!(validate_redirect_uri_syntax("file:///tmp/callback").is_err());
+    assert!(validate_redirect_uri_syntax("com.example.app:/callback").is_err());
+    assert!(validate_redirect_uri_syntax("https://user:pass@example.com/callback").is_err());
+    assert!(validate_redirect_uri_syntax("https://example.com/callback#fragment").is_err());
     assert!(legacy_chatgpt_redirect(
         "https://chatgpt.com/connector_platform_oauth_redirect"
     ));
