@@ -259,7 +259,13 @@ pub async fn authorize_get(
         );
     }
     match validate_authorization_request(&state, &request).await {
-        Ok(validated) => login_page(&request, &validated.client, &validated.redirect_uri, None),
+        Ok(validated) => login_page(
+            &request,
+            &validated.client,
+            &validated.redirect_uri,
+            &state.config.oauth.username,
+            None,
+        ),
         Err(error) => authorization_error(&state, &request, &error).await,
     }
 }
@@ -302,6 +308,7 @@ pub async fn authorize_post(
             &form.request,
             &validated.client,
             &validated.redirect_uri,
+            &state.config.oauth.username,
             Some("Invalid username or password."),
         );
     }

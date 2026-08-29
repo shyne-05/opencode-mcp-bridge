@@ -28,6 +28,7 @@ pub(super) fn login_page(
     request: &OAuthAuthorizeRequest,
     client: &OAuthClient,
     validated_redirect_uri: &str,
+    username: &str,
     error: Option<&str>,
 ) -> Response {
     let hidden = [
@@ -82,9 +83,10 @@ pub(super) fn login_page(
         ""
     };
     let body = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>MCP Bridge authorization</title></head><body><main><h1>Authorize {client_name}</h1><p>Sign in to allow <strong>{client_name}</strong> to access this MCP Bridge.</p>{client_origin}<p><small>Redirect after approval: {redirect_host}</small></p>{localhost_warning}{error}<form method=\"post\" action=\"/oauth/authorize\">{hidden}<label>Username<br><input name=\"username\" autocomplete=\"username\" required></label><br><label>Password<br><input type=\"password\" name=\"password\" autocomplete=\"current-password\" required></label><br><button type=\"submit\">Authorize</button></form></main></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>MCP Bridge authorization</title></head><body><main><h1>Authorize {client_name}</h1><p>Sign in to allow <strong>{client_name}</strong> to access this MCP Bridge.</p>{client_origin}<p><small>Redirect after approval: {redirect_host}</small></p>{localhost_warning}{error}<form method=\"post\" action=\"/oauth/authorize\">{hidden}<label>Username<br><input name=\"username\" value=\"{username}\" autocomplete=\"username\" required></label><br><label>Password<br><input type=\"password\" name=\"password\" autocomplete=\"current-password\" required></label><br><button type=\"submit\">Authorize</button></form></main></body></html>",
         client_name = html_escape(&client.client_name),
         redirect_host = html_escape(&redirect_host),
+        username = html_escape(username),
     );
     with_login_security_headers(
         (

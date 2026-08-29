@@ -144,7 +144,7 @@ impl Config {
             username: env::var("MCP_OAUTH_USERNAME")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "user".to_string()),
+                .unwrap_or_else(|| "admin".to_string()),
             password: env::var("MCP_OAUTH_PASSWORD")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),

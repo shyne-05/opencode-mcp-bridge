@@ -156,6 +156,10 @@ function assertSecretsNotPrinted(output, secrets) {
     );
     assert(!csp.includes("*"), "CSP contains a wildcard source");
 
+    assert(
+      (await page.locator('input[name="username"]').inputValue()) === USERNAME,
+      "OAuth login did not prefill the configured username",
+    );
     await page.locator('input[name="username"]').fill(USERNAME);
     await page.locator('input[name="password"]').fill(PASSWORD);
     const [authorizePost] = await Promise.all([

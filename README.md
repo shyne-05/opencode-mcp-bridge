@@ -313,14 +313,16 @@ The bridge enforces this as loopback-only: startup fails if unauthenticated mode
 For an external ChatGPT MCP connection, expose the bridge through HTTPS and configure an OAuth origin:
 
 ```bash
-export MCP_PUBLIC_URL="https://your-domain.example.com"
-export MCP_OAUTH_USERNAME="bridge-user"
-read -r -s -p "MCP OAuth password: " MCP_OAUTH_PASSWORD
-export MCP_OAUTH_PASSWORD
-printf '\n'
+bash scripts/bootstrap-oauth.sh https://your-domain.example.com
 ```
 
-The OAuth password must be at least 12 characters.
+The bootstrap helper uses `admin` as the normal username, generates a unique high-entropy password locally, and stores it only in `~/.config/mcp-bridge/env` with mode `600`. No shared default password is committed to this repository. To view the local credential when the OAuth login page opens:
+
+```bash
+bash scripts/bootstrap-oauth.sh --show
+```
+
+Use `--rotate` to replace the password deliberately. See [`docs/OAUTH_SETUP.md`](docs/OAUTH_SETUP.md) for the complete onboarding and rotation workflow. You can still set `MCP_OAUTH_USERNAME` and `MCP_OAUTH_PASSWORD` manually; explicit values override the bootstrap convention, and passwords must be at least 12 characters.
 
 Connect ChatGPT to:
 
@@ -422,7 +424,7 @@ A healthy production/native deployment should report the expected Git commit, `d
 | `MCP_STATE_FILE` | XDG/user state path | Durable OAuth token fingerprints/metadata, DCR clients, and session ownership; `:memory:` disables persistence |
 | `MCP_TRUST_PROXY` | `none` | `none` or `cloudflare`; forwarded IPs are trusted only from a loopback proxy |
 | `MCP_PUBLIC_URL` | unset | Public HTTPS OAuth origin |
-| `MCP_OAUTH_USERNAME` | `user` | Built-in OAuth login username |
+| `MCP_OAUTH_USERNAME` | `admin` | Built-in OAuth login username; bootstrap helper writes this explicitly |
 | `MCP_OAUTH_PASSWORD` | unset | Built-in OAuth login password; minimum 12 characters when OAuth is enabled |
 | `MCP_OAUTH_ACCESS_TOKEN_TTL` | `3600` | OAuth access-token lifetime in seconds |
 | `MCP_OAUTH_REFRESH_TOKEN_TTL` | `2592000` | OAuth refresh-token lifetime in seconds |
