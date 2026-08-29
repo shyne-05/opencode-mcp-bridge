@@ -1,5 +1,5 @@
 use crate::{
-    state::{OAuthClient, OAuthClientKind, OAuthRefreshToken},
+    state::{OAuthAccessToken, OAuthClient, OAuthClientKind, OAuthRefreshToken},
     util::now_seconds,
 };
 use serde::{Deserialize, Serialize};
@@ -12,11 +12,14 @@ use std::{
 use tokio::sync::Mutex;
 
 const STATE_VERSION: u32 = 1;
+const ACCESS_TOKEN_FINGERPRINT_PREFIX: &str = "sha256:";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DurableSnapshot {
     #[serde(default = "state_version")]
     pub version: u32,
+    #[serde(default)]
+    pub access_tokens: HashMap<String, OAuthAccessToken>,
     #[serde(default)]
     pub refresh_tokens: HashMap<String, OAuthRefreshToken>,
     #[serde(default)]
@@ -69,6 +72,9 @@ impl DurableStore {
             ));
         }
         let now = now_seconds();
+        state.access_tokens.retain(|key, token| {
+            key.starts_with(ACCESS_TOKEN_FINGERPRINT_PREFIX) && token.expires_at > now
+        });
         state
             .refresh_tokens
             .retain(|_, token| token.expires_at > now);
@@ -144,17 +150,25 @@ fn write_atomic(path: &Path, snapshot: &DurableSnapshot) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::OAuthRefreshToken;
+    use crate::state::{OAuthAccessToken, OAuthRefreshToken};
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn durable_state_round_trips_without_plaintext_refresh_token() {
+    async fn durable_state_round_trips_without_plaintext_oauth_tokens() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("state.json");
         let store = DurableStore::new(Some(path.clone()));
         let mut snapshot = DurableSnapshot::default();
+        snapshot.access_tokens.insert(
+            "sha256:hashed-access-token-key".into(),
+            OAuthAccessToken {
+                principal: "user".into(),
+                resource: "resource".into(),
+                expires_at: u64::MAX,
+            },
+        );
         snapshot.refresh_tokens.insert(
-            "hashed-token-key".into(),
+            "hashed-refresh-token-key".into(),
             OAuthRefreshToken {
                 client_id: "client".into(),
                 principal: "user".into(),
@@ -165,6 +179,7 @@ mod tests {
         );
         store.save(snapshot).await.unwrap();
         let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("mcp_access_"));
         assert!(!raw.contains("mcp_refresh_"));
         #[cfg(unix)]
         {
@@ -175,6 +190,15 @@ mod tests {
             );
         }
         let loaded = store.load().unwrap();
-        assert!(loaded.refresh_tokens.contains_key("hashed-token-key"));
+        assert!(
+            loaded
+                .access_tokens
+                .contains_key("sha256:hashed-access-token-key")
+        );
+        assert!(
+            loaded
+                .refresh_tokens
+                .contains_key("hashed-refresh-token-key")
+        );
     }
 }
