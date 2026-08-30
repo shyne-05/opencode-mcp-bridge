@@ -442,6 +442,17 @@ mod tests {
         }
     }
 
+    fn normal_shell_test_timeout() -> Duration {
+        #[cfg(windows)]
+        {
+            Duration::from_secs(15)
+        }
+        #[cfg(not(windows))]
+        {
+            Duration::from_secs(5)
+        }
+    }
+
     #[tokio::test]
     async fn bounded_reader_caps_output() {
         let input = &b"abcdefghij"[..];
@@ -454,7 +465,7 @@ mod tests {
     async fn native_shell_executes_command() {
         let root = tempfile::tempdir().unwrap();
         let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
-        cfg.shell_timeout = Duration::from_secs(5);
+        cfg.shell_timeout = normal_shell_test_timeout();
         let output = run_shell("echo mcp-cross-platform", root.path(), &cfg).await;
         assert!(output.is_success(), "{}", output.render());
         assert!(output.stdout.contains("mcp-cross-platform"));
@@ -464,7 +475,7 @@ mod tests {
     async fn shell_output_is_bounded_during_execution() {
         let root = tempfile::tempdir().unwrap();
         let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
-        cfg.shell_timeout = Duration::from_secs(5);
+        cfg.shell_timeout = normal_shell_test_timeout();
         cfg.stdout_limit = 128;
         #[cfg(windows)]
         let command = "Write-Output ('x' * 10000)";
