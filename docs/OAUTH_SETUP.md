@@ -30,6 +30,18 @@ MCP_OAUTH_PASSWORD=<unique locally generated secret>
 
 No real password is committed to GitHub and the bootstrap helper does not print it into normal command output.
 
+## Set your own password manually
+
+If you prefer to choose the OAuth password yourself, use the placeholder shown in `.env.example` and replace it with your own password before starting the bridge:
+
+```text
+MCP_PUBLIC_URL=https://your-domain.example.com
+MCP_OAUTH_USERNAME=admin
+MCP_OAUTH_PASSWORD=YOUR_PASSWORD_HERE
+```
+
+`YOUR_PASSWORD_HERE` is documentation only. Replace it with a unique password for that installation. Do not commit the real value back to GitHub. OAuth passwords must be at least 12 characters.
+
 ## View the local login
 
 When you need to enter the OAuth login on this machine:
