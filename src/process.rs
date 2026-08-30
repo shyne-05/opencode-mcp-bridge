@@ -68,11 +68,63 @@ pub fn safe_child_environment(config: &ProcessConfig) -> HashMap<String, String>
         .collect()
 }
 
-pub async fn run_bash(command: &str, directory: &Path, config: &ProcessConfig) -> ProcessOutput {
-    let mut process = Command::new("bash");
+pub fn native_shell_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "PowerShell"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "zsh"
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "bash"
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "shell"
+    }
+}
+
+fn native_shell_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut process = Command::new("powershell.exe");
+        process.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+        ]);
+        process.arg(command);
+        process
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut process = Command::new("/bin/zsh");
+        process.arg("-lc").arg(command);
+        process
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut process = Command::new("bash");
+        process.arg("-c").arg(command);
+        process
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let mut process = Command::new("sh");
+        process.arg("-c").arg(command);
+        process
+    }
+}
+
+pub async fn run_shell(command: &str, directory: &Path, config: &ProcessConfig) -> ProcessOutput {
+    let mut process = native_shell_command(command);
     process
-        .arg("-c")
-        .arg(command)
         .current_dir(directory)
         .env_clear()
         .envs(safe_child_environment(config))
@@ -322,14 +374,30 @@ async fn terminate_process_tree(child: &mut Child, pid: Option<u32>) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn terminate_process_tree(child: &mut Child, pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if status.is_ok_and(|status| status.success()) {
+            return;
+        }
+    }
+    let _ = child.kill().await;
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn terminate_process_tree(child: &mut Child, _pid: Option<u32>) {
     let _ = child.kill().await;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{read_bounded, safe_child_environment};
+    use super::{native_shell_name, read_bounded, run_shell, safe_child_environment};
     use crate::config::{ProcessConfig, Profile};
     use std::{collections::HashSet, time::Duration};
 
@@ -357,38 +425,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bash_output_is_bounded_during_execution() {
+    async fn native_shell_executes_command() {
         let root = tempfile::tempdir().unwrap();
-        let mut cfg = config(&["PATH", "HOME"]);
+        let output = run_shell("echo mcp-cross-platform", root.path(), &config(&["PATH", "HOME", "SystemRoot"])).await;
+        assert!(output.is_success(), "{}", output.render());
+        assert!(output.stdout.contains("mcp-cross-platform"));
+    }
+
+    #[tokio::test]
+    async fn shell_output_is_bounded_during_execution() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
         cfg.stdout_limit = 128;
-        let output = super::run_bash(r#"python3 -c 'print("x" * 10000)'"#, root.path(), &cfg).await;
-        assert_eq!(output.code, Some(0));
+        #[cfg(windows)]
+        let command = "Write-Output ('x' * 10000)";
+        #[cfg(not(windows))]
+        let command = r#"python3 -c 'print("x" * 10000)'"#;
+        let output = run_shell(command, root.path(), &cfg).await;
+        assert_eq!(output.code, Some(0), "{}", output.render());
         assert!(output.stdout.len() <= 128);
         assert!(output.stdout_truncated);
     }
 
     #[tokio::test]
-    async fn bash_timeout_terminates_process_group() {
+    async fn shell_timeout_terminates_process() {
         let root = tempfile::tempdir().unwrap();
-        let mut cfg = config(&["PATH", "HOME"]);
+        let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
         cfg.shell_timeout = Duration::from_millis(100);
+        #[cfg(windows)]
+        let command = "Start-Sleep -Seconds 30";
+        #[cfg(not(windows))]
+        let command = "sleep 30";
         let started = std::time::Instant::now();
-        let output = super::run_bash("sleep 30 & wait", root.path(), &cfg).await;
+        let output = run_shell(command, root.path(), &cfg).await;
         assert!(output.timed_out);
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_timeout_terminates_process_group() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config(&["PATH", "HOME"]);
+        cfg.shell_timeout = Duration::from_millis(100);
+        let started = std::time::Instant::now();
+        let output = run_shell("sleep 30 & wait", root.path(), &cfg).await;
+        assert!(output.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn detached_background_child_does_not_hold_tool_response_open() {
         let root = tempfile::tempdir().unwrap();
         let mut cfg = config(&["PATH", "HOME"]);
         cfg.shell_timeout = Duration::from_secs(5);
         let started = std::time::Instant::now();
-        let output = super::run_bash("printf launched; sleep 2 &", root.path(), &cfg).await;
+        let output = run_shell("printf launched; sleep 2 &", root.path(), &cfg).await;
         assert!(output.is_success());
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(output.stdout.contains("launched"));
         assert!(output.stdout_truncated || output.stderr_truncated);
+    }
+
+    #[test]
+    fn native_shell_matches_platform() {
+        #[cfg(windows)]
+        assert_eq!(native_shell_name(), "PowerShell");
+        #[cfg(target_os = "macos")]
+        assert_eq!(native_shell_name(), "zsh");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(native_shell_name(), "bash");
     }
 
     #[test]
