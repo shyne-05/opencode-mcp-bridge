@@ -11,9 +11,10 @@ mod util;
 
 use axum::{
     Json, Router,
-    extract::State,
-    middleware,
-    response::IntoResponse,
+    extract::{Request, State},
+    http::{StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use backend::Backend;
@@ -48,6 +49,19 @@ fn allowed_mcp_hosts(config: &Config) -> Vec<String> {
     hosts.sort_unstable();
     hosts.dedup();
     hosts
+}
+
+async fn reject_oversized_content_length(request: Request, next: Next) -> Response {
+    let oversized = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > MAX_REQUEST_BYTES as u64);
+    if oversized {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    next.run(request).await
 }
 
 async fn index(State(state): State<AppState>) -> impl IntoResponse {
@@ -86,9 +100,9 @@ async fn live() -> impl IntoResponse {
 async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     let backend = Backend::new(&state).health().await;
     let status = if backend {
-        axum::http::StatusCode::OK
+        StatusCode::OK
     } else {
-        axum::http::StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::SERVICE_UNAVAILABLE
     };
     (status, Json(json!({"ok": backend, "backend": backend})))
 }
@@ -166,6 +180,7 @@ async fn main() {
         .route("/oauth/register", post(oauth::register))
         .merge(protected)
         .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
+        .layer(middleware::from_fn(reject_oversized_content_length))
         .with_state(state.clone());
 
     let listener = match tokio::net::TcpListener::bind(&address).await {
