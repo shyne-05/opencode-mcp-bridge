@@ -489,7 +489,7 @@ mod tests {
         cfg.shell_timeout = normal_shell_test_timeout();
         cfg.stdout_limit = 128;
         #[cfg(windows)]
-        let command = "for /L %i in (1,1,10000) do @<nul set /p =x";
+        let command = "for /L %i in (1,1,10000) do @echo x";
         #[cfg(not(windows))]
         let command = r#"python3 -c 'print("x" * 10000)'"#;
         let output = run_shell(command, root.path(), &cfg).await;
