@@ -117,14 +117,7 @@ fn native_shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
         let mut process = Command::new("powershell.exe");
-        process.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-        ]);
+        process.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
         process.arg(command);
         process
     }
