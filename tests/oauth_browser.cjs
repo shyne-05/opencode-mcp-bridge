@@ -57,6 +57,34 @@ function assertSecretsNotPrinted(output, secrets) {
   }
 }
 
+function bridgeExecutable() {
+  return path.join(ROOT, "target", "debug", process.platform === "win32" ? "mcp-bridge.exe" : "mcp-bridge");
+}
+
+function bridgeEnvironment(port, origin) {
+  const env = {
+    PATH: process.env.PATH,
+    MCP_PROFILE: "server-secure",
+    MCP_HOST: "127.0.0.1",
+    MCP_PORT: String(port),
+    BRIDGE_WORKDIR: ROOT,
+    BRIDGE_BACKEND_URL: "http://127.0.0.1:9",
+    MCP_STATE_FILE: ":memory:",
+    MCP_PUBLIC_URL: origin,
+    MCP_OAUTH_ALLOW_INSECURE_HTTP: "true",
+    MCP_OAUTH_USERNAME: USERNAME,
+    MCP_OAUTH_PASSWORD: PASSWORD,
+    MCP_TEST_API_KEY: API_KEY_SECRET,
+    CLOUDFLARED_TOKEN: TUNNEL_TOKEN_SECRET,
+    MCP_TEST_PRIVATE_KEY: PRIVATE_KEY_SECRET,
+    RUST_LOG: "error",
+  };
+  for (const name of ["HOME", "USERPROFILE", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
+    if (process.env[name]) env[name] = process.env[name];
+  }
+  return env;
+}
+
 (async () => {
   let callbackRequest;
   const callback = http.createServer((request, response) => {
@@ -69,27 +97,10 @@ function assertSecretsNotPrinted(output, secrets) {
   const bridgePort = await freePort();
   const bridgeOrigin = `http://127.0.0.1:${bridgePort}`;
 
-  const bridge = spawn(path.join(ROOT, "target", "debug", "mcp-bridge"), [], {
+  const bridge = spawn(bridgeExecutable(), [], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      MCP_PROFILE: "server-secure",
-      MCP_HOST: "127.0.0.1",
-      MCP_PORT: String(bridgePort),
-      BRIDGE_WORKDIR: ROOT,
-      BRIDGE_BACKEND_URL: "http://127.0.0.1:9",
-      MCP_STATE_FILE: ":memory:",
-      MCP_PUBLIC_URL: bridgeOrigin,
-      MCP_OAUTH_ALLOW_INSECURE_HTTP: "true",
-      MCP_OAUTH_USERNAME: USERNAME,
-      MCP_OAUTH_PASSWORD: PASSWORD,
-      MCP_TEST_API_KEY: API_KEY_SECRET,
-      CLOUDFLARED_TOKEN: TUNNEL_TOKEN_SECRET,
-      MCP_TEST_PRIVATE_KEY: PRIVATE_KEY_SECRET,
-      RUST_LOG: "error",
-    },
+    env: bridgeEnvironment(bridgePort, bridgeOrigin),
   });
   let bridgeOutput = "";
   bridge.stdout.on("data", (chunk) => {
@@ -131,11 +142,8 @@ function assertSecretsNotPrinted(output, secrets) {
       scope: "mcp:tools offline_access",
     }).toString();
 
-    browser = await chromium.launch({
-      executablePath: "/usr/bin/google-chrome",
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage"],
-    });
+    const browserArgs = process.platform === "linux" ? ["--no-sandbox", "--disable-dev-shm-usage"] : [];
+    browser = await chromium.launch({ channel: "chrome", headless: true, args: browserArgs });
     const page = await browser.newPage();
     await page.context().addCookies([
       { name: "oauth_regression_cookie", value: COOKIE_SECRET, url: bridgeOrigin },
@@ -213,7 +221,7 @@ function assertSecretsNotPrinted(output, secrets) {
       private_key: PRIVATE_KEY_SECRET,
     });
 
-    console.log("OAuth browser regression passed");
+    console.log(`OAuth browser regression passed on ${process.platform}`);
   } finally {
     if (browser) await browser.close();
     bridge.kill("SIGTERM");
