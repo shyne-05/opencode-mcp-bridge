@@ -1,7 +1,3 @@
-param(
-    [int]$Port = 9222
-)
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -9,6 +5,7 @@ if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw 'This launcher is for Windows only.'
 }
 
+$Port = 9222
 $Profile = if ($env:MCP_BROWSER_PROFILE_DIR) {
     $env:MCP_BROWSER_PROFILE_DIR
 } else {
