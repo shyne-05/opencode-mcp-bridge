@@ -30,7 +30,17 @@ jobs:
           node-version: 22
       - run: cargo fmt --all -- --check
       - run: cargo check --locked --all-targets --all-features
-      - run: cargo test --locked --all-features
+      - name: Warm Windows PowerShell
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -Command "Write-Output MCP_POWERSHELL_WARM"
+      - name: Rust tests on Unix
+        if: runner.os != 'Windows'
+        run: cargo test --locked --all-features
+      - name: Rust tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo test --locked --all-features -- --test-threads=1
       - name: Install Playwright package on Unix
         if: runner.os != 'Windows'
         shell: bash
@@ -122,7 +132,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Parse PowerShell helpers
+      - name: Parse helpers with PowerShell 7
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -138,8 +148,32 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count -gt 0) { throw ($errors | Out-String) }
           }
-      - name: Verify Windows OAuth bootstrap helper
-        shell: pwsh
+      - name: Parse helpers with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @(
+            'scripts/package-release.ps1',
+            'scripts/bootstrap-oauth.ps1',
+            'scripts/run-with-env.ps1',
+            'scripts/start-browser.ps1',
+            'scripts/install-user-service-windows.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          }
+      - name: Verify Windows PowerShell and CMD availability
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ps = & powershell.exe -NoLogo -NoProfile -NonInteractive -Command "Write-Output MCP_PS_OK"
+          if (($ps | Out-String).Trim() -ne 'MCP_PS_OK') { throw 'Windows PowerShell invocation failed' }
+          $cmd = & cmd.exe /d /s /c "echo MCP_CMD_OK"
+          if (($cmd | Out-String).Trim() -ne 'MCP_CMD_OK') { throw 'CMD invocation failed' }
+      - name: Verify Windows OAuth bootstrap helper on PowerShell 5.1
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'mcp-oauth-test'
