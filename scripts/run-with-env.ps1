@@ -5,9 +5,16 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Get-LocalAppDataPath {
+    $Path = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if (-not $Path) { $Path = $env:LOCALAPPDATA }
+    if (-not $Path) { throw 'Unable to resolve the current user LocalApplicationData directory.' }
+    return $Path
+}
+
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $EnvFile) {
-    $EnvFile = Join-Path $env:LOCALAPPDATA 'mcp-bridge/env'
+    $EnvFile = Join-Path (Get-LocalAppDataPath) 'mcp-bridge\env'
 }
 
 if (-not $env:HOME -and $env:USERPROFILE) {
@@ -26,7 +33,7 @@ if (Test-Path $EnvFile) {
     }
 }
 
-$Binary = Join-Path $Root 'target/release/mcp-bridge.exe'
+$Binary = Join-Path $Root 'target\release\mcp-bridge.exe'
 if (-not (Test-Path $Binary)) { throw "bridge binary not found: $Binary" }
 Set-Location $Root
 & $Binary
