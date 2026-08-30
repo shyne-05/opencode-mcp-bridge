@@ -11,6 +11,7 @@ use reqwest::{Client, header};
 use serde_json::{Value, json};
 use std::{collections::HashMap, path::PathBuf, process::Command, time::Duration};
 use tempfile::tempdir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const TOKEN: &str = "regression-test-token";
 const USERNAME: &str = "restart-user";
@@ -80,19 +81,40 @@ async fn mcp_request_body_limit_returns_413() {
         command.env("MCP_TOKEN", TOKEN);
     })
     .await;
-    let huge = "x".repeat(1_048_576 + 4096);
-    let response = Client::new()
-        .post(format!("{}/mcp", bridge.base_url))
-        .bearer_auth(TOKEN)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("Expect", "100-continue")
-        .header("MCP-Protocol-Version", "2026-07-28")
-        .header("Mcp-Method", "tools/call")
-        .header("Mcp-Name", "bridge_search")
-        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bridge_search","arguments":{"pattern":huge},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}))
-        .send().await.expect("oversized request should complete");
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Test the early Content-Length guard at the HTTP boundary instead of uploading
+    // a huge body with an eager client. A server is allowed to reject and close an
+    // oversized request before consuming its body; some operating systems then
+    // surface a connection reset to a client that is still writing. Sending only
+    // the headers verifies the actual contract deterministically: the bridge must
+    // recognize the declared oversized body and emit 413 without waiting for it.
+    let address = bridge
+        .base_url
+        .strip_prefix("http://")
+        .expect("test bridge should use loopback HTTP");
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("test client should connect to bridge");
+    let declared_length = 1_048_576 + 4096;
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: bridge_search\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("oversized request headers should be written");
+
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response))
+        .await
+        .expect("bridge should reject declared oversized body promptly")
+        .expect("413 response should be readable");
+    let response = String::from_utf8_lossy(&response);
+    let status_line = response.lines().next().unwrap_or_default();
+    assert!(
+        status_line.starts_with("HTTP/1.1 413 ") || status_line == "HTTP/1.1 413",
+        "unexpected HTTP status line: {status_line:?}"
+    );
 }
 
 #[tokio::test]
