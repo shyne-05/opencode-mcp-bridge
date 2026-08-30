@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${MCP_BROWSER_CDP_PORT:-9222}"
+PORT=9222
 case "$(uname -s)" in
   Darwin)
     PROFILE="${MCP_BROWSER_PROFILE_DIR:-$HOME/Library/Application Support/mcp-bridge/chrome-profile}"
