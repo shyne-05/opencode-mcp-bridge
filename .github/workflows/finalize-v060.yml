@@ -52,31 +52,33 @@ jobs:
           changelog = Path('CHANGELOG.md')
           text = changelog.read_text()
           marker = '## Unreleased\n\n### Performance'
-          replacement = '''## Unreleased
-
-## 0.6.0 — 2026-08-30
-
-### Added
-
-- Added native Linux, macOS, and Windows support while keeping the public MCP surface fixed at exactly five tools.
-- Added native macOS LaunchAgent helpers and Windows Scheduled Task, OAuth bootstrap, browser-launch, environment-runner, and release-packaging PowerShell helpers.
-- Added CI verification on `ubuntu-latest`, `macos-latest`, and `windows-latest`, including Rust tests, browser-worker regression, OAuth browser regression, Clippy, and native packaging.
-- Added runtime OS, architecture, and native-shell provenance to the root metadata endpoint.
-
-### Changed
-
-- Made host shell execution platform-aware: Bash on Linux, isolated zsh on macOS, and deterministic CMD on Windows by default, with `MCP_WINDOWS_SHELL=powershell` as an explicit PowerShell mode.
-- Made configuration and helper paths portable instead of assuming a drive letter, username, or home-directory layout; Windows helpers use user-scoped system locations such as LocalApplicationData.
-- Added native browser discovery/launch helpers using a dedicated CDP profile and loopback-only remote debugging, compatible with current Chrome remote-debugging requirements.
-- Hardened process-tree termination, durable-state replacement, canonical path confinement, and oversized-request rejection for platform-specific Windows/macOS behavior.
-
-### Performance'''
+          release_lines = [
+              '## Unreleased',
+              '',
+              '## 0.6.0 — 2026-08-30',
+              '',
+              '### Added',
+              '',
+              '- Added native Linux, macOS, and Windows support while keeping the public MCP surface fixed at exactly five tools.',
+              '- Added native macOS LaunchAgent helpers and Windows Scheduled Task, OAuth bootstrap, browser-launch, environment-runner, and release-packaging PowerShell helpers.',
+              '- Added CI verification on `ubuntu-latest`, `macos-latest`, and `windows-latest`, including Rust tests, browser-worker regression, OAuth browser regression, Clippy, and native packaging.',
+              '- Added runtime OS, architecture, and native-shell provenance to the root metadata endpoint.',
+              '',
+              '### Changed',
+              '',
+              '- Made host shell execution platform-aware: Bash on Linux, isolated zsh on macOS, and deterministic CMD on Windows by default, with `MCP_WINDOWS_SHELL=powershell` as an explicit PowerShell mode.',
+              '- Made configuration and helper paths portable instead of assuming a drive letter, username, or home-directory layout; Windows helpers use user-scoped system locations such as LocalApplicationData.',
+              '- Added native browser discovery/launch helpers using a dedicated CDP profile and loopback-only remote debugging, compatible with current Chrome remote-debugging requirements.',
+              '- Hardened process-tree termination, durable-state replacement, canonical path confinement, and oversized-request rejection for platform-specific Windows/macOS behavior.',
+              '',
+              '### Performance',
+          ]
+          replacement = '\n'.join(release_lines)
           if marker not in text:
               raise SystemExit('CHANGELOG Unreleased marker not found')
           changelog.write_text(text.replace(marker, replacement, 1))
           PY
 
-          # Regenerate the root package entry in Cargo.lock after the version bump.
           cargo check --all-targets --all-features
           grep -A2 '^name = "mcp-bridge"$' Cargo.lock | grep -q '^version = "0.6.0"$'
 
@@ -99,8 +101,6 @@ jobs:
       - name: Commit exact release tree and remove one-shot workflow
         id: release_commit
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -124,7 +124,7 @@ jobs:
           gh workflow run ci.yml --ref main
           run_id=''
           for _ in $(seq 1 60); do
-            run_id="$(gh run list --workflow=ci.yml --event=workflow_dispatch --branch=main --limit 20 --json databaseId,headSha,createdAt --jq '.[] | select(.headSha == env.FINAL_SHA) | .databaseId' | head -n1)"
+            run_id="$(gh run list --workflow=ci.yml --event=workflow_dispatch --branch=main --limit 20 --json databaseId,headSha | jq -r --arg sha "$FINAL_SHA" '.[] | select(.headSha == $sha) | .databaseId' | head -n1)"
             if [ -n "$run_id" ]; then
               break
             fi
@@ -175,8 +175,7 @@ jobs:
           gh release create v0.6.0 \
             --verify-tag \
             --title 'MCP Bridge v0.6.0' \
-            --notes-file /tmp/release-notes.md \
-            --latest
+            --notes-file /tmp/release-notes.md
 
           test "$(gh api repos/${GITHUB_REPOSITORY}/branches --paginate --jq '.[].name' | sort | tr '\n' ' ')" = 'main '
           test "$(gh pr list --state open --json number --jq 'length')" = '0'
