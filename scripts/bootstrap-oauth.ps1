@@ -55,7 +55,8 @@ if ($ExistingPassword) {
     $Password = $ExistingPassword
 } else {
     $Bytes = New-Object byte[] 24
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($Bytes)
+    $Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $Rng.GetBytes($Bytes) } finally { $Rng.Dispose() }
     $Password = -join ($Bytes | ForEach-Object { $_.ToString('x2') })
 }
 if ($Password.Length -lt 24) { Fail 'Failed to generate a sufficiently strong OAuth password.' }
