@@ -86,6 +86,7 @@ async fn mcp_request_body_limit_returns_413() {
         .bearer_auth(TOKEN)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("Expect", "100-continue")
         .header("MCP-Protocol-Version", "2026-07-28")
         .header("Mcp-Method", "tools/call")
         .header("Mcp-Name", "bridge_search")
