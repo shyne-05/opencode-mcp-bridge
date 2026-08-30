@@ -31,16 +31,36 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo check --locked --all-targets --all-features
       - run: cargo test --locked --all-features
-      - run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global playwright@1.62.1
+      - name: Install Playwright package on Unix
         if: runner.os != 'Windows'
+        shell: bash
+        run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global playwright@1.62.1
       - name: Install Playwright package on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD='1'
           npm install --global playwright@1.62.1
-      - run: node tests/browser_worker.cjs
-      - run: node tests/oauth_browser.cjs
+      - name: Browser worker regression on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: NODE_PATH="$(npm root -g)" node tests/browser_worker.cjs
+      - name: Browser worker regression on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:NODE_PATH = (npm root -g)
+          node tests/browser_worker.cjs
+      - name: OAuth browser regression on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: NODE_PATH="$(npm root -g)" node tests/oauth_browser.cjs
+      - name: OAuth browser regression on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:NODE_PATH = (npm root -g)
+          node tests/oauth_browser.cjs
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: node --check scripts/browser.cjs
       - run: node --check tests/browser_worker.cjs
