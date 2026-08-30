@@ -193,8 +193,8 @@ async fn search_boundaries_and_prompt_sessions_work() {
     std::fs::write(work.path().join("inside.txt"), "INSIDE_MARKER").unwrap();
     let outside = outside_dir.path().join("outside.txt");
     std::fs::write(&outside, "OUTSIDE_MARKER").unwrap();
-    let (backend, backend_task) =
-        spawn_fake_backend(work.path().to_path_buf(), outside.clone()).await;
+    let canonical_work = std::fs::canonicalize(work.path()).unwrap();
+    let (backend, backend_task) = spawn_fake_backend(canonical_work, outside.clone()).await;
     let state_dir = tempdir().unwrap();
     let state_file = state_dir.path().join("state.json");
     let port = free_port();
