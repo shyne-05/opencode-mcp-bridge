@@ -1,7 +1,7 @@
 use crate::{
     backend::{Backend, PromptRequest, resolve_directory},
     browser::run_browser_action,
-    process::run_bash,
+    process::{native_shell_name, run_shell},
     state::{AppState, Principal},
     util::{optional_string_arg, required_string_arg},
 };
@@ -61,7 +61,7 @@ impl BridgeServer {
         if self.state.config.tools.shell {
             tools.push(tool(
                 "shell",
-                "Run an unrestricted bash command on the host with a sanitized child environment, bounded output, timeout, and concurrency control. Intended for a trusted personal workstation.",
+                "Run an unrestricted native shell command on the host (Bash on Linux, Zsh on macOS, PowerShell on Windows) with a sanitized child environment, bounded output, timeout, process-tree cleanup, and concurrency control. Intended for a trusted personal workstation.",
                 json!({
                     "command": {"type": "string"},
                     "directory": {"type": "string"}
@@ -130,7 +130,7 @@ impl BridgeServer {
                     optional_string_arg(args, "directory"),
                 )?;
                 let started_at = Instant::now();
-                let output = run_bash(
+                let output = run_shell(
                     required_string_arg(args, "command")?,
                     &directory,
                     &self.state.config.process,
@@ -140,13 +140,19 @@ impl BridgeServer {
                 tracing::info!(
                     target: "mcp_bridge::latency",
                     tool = "shell",
+                    shell = native_shell_name(),
                     queue_ms,
                     elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
                     success,
                     "tool execution latency"
                 );
                 drop(permit);
-                let rendered = format!("dir:{}\n{}", directory.display(), output.render());
+                let rendered = format!(
+                    "shell:{}\ndir:{}\n{}",
+                    native_shell_name(),
+                    directory.display(),
+                    output.render()
+                );
                 if success { Ok(rendered) } else { Err(rendered) }
             }
             "browser" if self.state.config.tools.browser => {
