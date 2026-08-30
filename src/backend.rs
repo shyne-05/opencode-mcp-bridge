@@ -242,7 +242,9 @@ pub fn resolve_existing_path(base: &Path, requested: &str) -> Result<PathBuf, St
 }
 
 fn ensure_inside(base: &Path, resolved: &Path) -> Result<(), String> {
-    if resolved.starts_with(base) {
+    let canonical_base = std::fs::canonicalize(base)
+        .map_err(|error| format!("invalid BRIDGE_WORKDIR '{}': {error}", base.display()))?;
+    if resolved.starts_with(&canonical_base) {
         Ok(())
     } else {
         Err(format!(
@@ -362,8 +364,14 @@ mod tests {
         let root = tempdir().unwrap();
         let file = root.path().join("ok.txt");
         fs::write(&file, "ok").unwrap();
-        assert_eq!(resolve_existing_path(root.path(), "ok.txt").unwrap(), file);
-        assert_eq!(resolve_directory(root.path(), None).unwrap(), root.path());
+        assert_eq!(
+            resolve_existing_path(root.path(), "ok.txt").unwrap(),
+            fs::canonicalize(&file).unwrap()
+        );
+        assert_eq!(
+            resolve_directory(root.path(), None).unwrap(),
+            fs::canonicalize(root.path()).unwrap()
+        );
     }
 
     #[test]
