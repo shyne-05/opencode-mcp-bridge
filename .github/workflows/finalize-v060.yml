@@ -1,0 +1,183 @@
+name: Finalize v0.6.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/finalize-v060.yml
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: finalize-v0.6.0
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Prepare v0.6.0 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cargo = Path('Cargo.toml')
+          text = cargo.read_text()
+          old = 'version = "0.5.2"'
+          new = 'version = "0.6.0"'
+          if old not in text:
+              raise SystemExit('Cargo.toml does not contain expected 0.5.2 version')
+          cargo.write_text(text.replace(old, new, 1))
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          old = 'Current package version: **0.5.2**.'
+          new = 'Current package version: **0.6.0**.'
+          if old not in text:
+              raise SystemExit('README version marker not found')
+          readme.write_text(text.replace(old, new, 1))
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text()
+          marker = '## Unreleased\n\n### Performance'
+          replacement = '''## Unreleased
+
+## 0.6.0 — 2026-08-30
+
+### Added
+
+- Added native Linux, macOS, and Windows support while keeping the public MCP surface fixed at exactly five tools.
+- Added native macOS LaunchAgent helpers and Windows Scheduled Task, OAuth bootstrap, browser-launch, environment-runner, and release-packaging PowerShell helpers.
+- Added CI verification on `ubuntu-latest`, `macos-latest`, and `windows-latest`, including Rust tests, browser-worker regression, OAuth browser regression, Clippy, and native packaging.
+- Added runtime OS, architecture, and native-shell provenance to the root metadata endpoint.
+
+### Changed
+
+- Made host shell execution platform-aware: Bash on Linux, isolated zsh on macOS, and deterministic CMD on Windows by default, with `MCP_WINDOWS_SHELL=powershell` as an explicit PowerShell mode.
+- Made configuration and helper paths portable instead of assuming a drive letter, username, or home-directory layout; Windows helpers use user-scoped system locations such as LocalApplicationData.
+- Added native browser discovery/launch helpers using a dedicated CDP profile and loopback-only remote debugging, compatible with current Chrome remote-debugging requirements.
+- Hardened process-tree termination, durable-state replacement, canonical path confinement, and oversized-request rejection for platform-specific Windows/macOS behavior.
+
+### Performance'''
+          if marker not in text:
+              raise SystemExit('CHANGELOG Unreleased marker not found')
+          changelog.write_text(text.replace(marker, replacement, 1))
+          PY
+
+          # Regenerate the root package entry in Cargo.lock after the version bump.
+          cargo check --all-targets --all-features
+          grep -A2 '^name = "mcp-bridge"$' Cargo.lock | grep -q '^version = "0.6.0"$'
+
+      - name: Verify release tree before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets --all-features
+          cargo test --locked --all-features
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          bash scripts/scan-secrets.sh
+          bash -n scripts/package-release.sh
+          bash -n scripts/deploy-user-service.sh
+          bash -n scripts/bootstrap-oauth.sh
+          bash -n scripts/run-with-env.sh
+          bash -n scripts/start-browser.sh
+          bash -n scripts/install-user-service-macos.sh
+
+      - name: Commit exact release tree and remove one-shot workflow
+        id: release_commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/finalize-v060.yml
+          git add Cargo.toml Cargo.lock README.md CHANGELOG.md
+          git commit -m 'release: v0.6.0'
+          git push origin HEAD:main
+          final_sha="$(git rev-parse HEAD)"
+          echo "sha=$final_sha" >> "$GITHUB_OUTPUT"
+          echo "Final release SHA: $final_sha"
+
+      - name: Dispatch full cross-platform CI on final SHA
+        id: dispatch_ci
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINAL_SHA: ${{ steps.release_commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --ref main
+          run_id=''
+          for _ in $(seq 1 60); do
+            run_id="$(gh run list --workflow=ci.yml --event=workflow_dispatch --branch=main --limit 20 --json databaseId,headSha,createdAt --jq '.[] | select(.headSha == env.FINAL_SHA) | .databaseId' | head -n1)"
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$run_id" ]; then
+            echo 'Could not find workflow_dispatch CI run for final SHA' >&2
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --exit-status
+
+      - name: Publish v0.6.0 and clean merged branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINAL_SHA: ${{ steps.release_commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          current_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$current_main" = "$FINAL_SHA"
+
+          if git ls-remote --exit-code --heads origin cross-platform >/dev/null 2>&1; then
+            git push origin --delete cross-platform
+          fi
+
+          git tag -a v0.6.0 "$FINAL_SHA" -m 'MCP Bridge v0.6.0'
+          git push origin refs/tags/v0.6.0
+
+          cat > /tmp/release-notes.md <<'NOTES'
+          ## MCP Bridge v0.6.0
+
+          First official cross-platform release of the current MCP Bridge architecture.
+
+          ### Highlights
+          - Native Linux, macOS, and Windows support.
+          - Exactly five stable public MCP tools: `bridge_prompt`, `bridge_read_file`, `bridge_search`, `shell`, and `browser`.
+          - Persistent Playwright/CDP browser worker for low-latency browser actions.
+          - Linux Bash, isolated macOS zsh, and deterministic Windows CMD with optional PowerShell mode.
+          - Native systemd, LaunchAgent, and Windows Scheduled Task helpers.
+          - Portable user/workspace paths with no hard-coded drive letter or username assumptions.
+          - OAuth authorization code + PKCE, CIMD/DCR compatibility, refresh rotation, restart-safe one-way token fingerprints, and secret-history scanning.
+          - Full CI gate across Ubuntu, macOS, and Windows, including browser and OAuth regressions, Clippy, packaging, and RustSec.
+
+          See `CHANGELOG.md` and `README.md` for details and installation instructions.
+          NOTES
+
+          gh release create v0.6.0 \
+            --verify-tag \
+            --title 'MCP Bridge v0.6.0' \
+            --notes-file /tmp/release-notes.md \
+            --latest
+
+          test "$(gh api repos/${GITHUB_REPOSITORY}/branches --paginate --jq '.[].name' | sort | tr '\n' ' ')" = 'main '
+          test "$(gh pr list --state open --json number --jq 'length')" = '0'
+          test "$(gh release view v0.6.0 --json tagName,isDraft,isPrerelease --jq '.tagName + " " + (.isDraft|tostring) + " " + (.isPrerelease|tostring)')" = 'v0.6.0 false false'
