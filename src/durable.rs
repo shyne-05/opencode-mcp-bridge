@@ -138,13 +138,54 @@ fn write_atomic(path: &Path, snapshot: &DurableSnapshot) -> Result<(), String> {
         .map_err(|error| format!("failed to write durable state '{}': {error}", tmp.display()))?;
     file.sync_all()
         .map_err(|error| format!("failed to sync durable state '{}': {error}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|error| {
+    replace_state_file(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_state_file(tmp: &Path, path: &Path) -> Result<(), String> {
+    fs::rename(tmp, path).map_err(|error| {
         format!(
             "failed to atomically replace durable state '{}': {error}",
             path.display()
         )
-    })?;
-    Ok(())
+    })
+}
+
+#[cfg(windows)]
+fn replace_state_file(tmp: &Path, path: &Path) -> Result<(), String> {
+    // std::fs::rename does not replace an existing destination on Windows.
+    // Rotate the previous file out of the way first and restore it if the
+    // second rename fails. DurableStore serializes writers, so a single
+    // process cannot race this transaction with itself.
+    let backup = path.with_extension(format!("replace-old-{}", std::process::id()));
+    let _ = fs::remove_file(&backup);
+    let had_previous = path.exists();
+    if had_previous {
+        fs::rename(path, &backup).map_err(|error| {
+            format!(
+                "failed to prepare durable state replacement '{}': {error}",
+                path.display()
+            )
+        })?;
+    }
+    match fs::rename(tmp, path) {
+        Ok(()) => {
+            if had_previous {
+                let _ = fs::remove_file(&backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_previous {
+                let _ = fs::rename(&backup, path);
+            }
+            Err(format!(
+                "failed to replace durable state '{}': {error}",
+                path.display()
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -153,16 +194,12 @@ mod tests {
     use crate::state::{OAuthAccessToken, OAuthRefreshToken};
     use tempfile::tempdir;
 
-    #[tokio::test]
-    async fn durable_state_round_trips_without_plaintext_oauth_tokens() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        let store = DurableStore::new(Some(path.clone()));
+    fn snapshot(principal: &str) -> DurableSnapshot {
         let mut snapshot = DurableSnapshot::default();
         snapshot.access_tokens.insert(
             "sha256:hashed-access-token-key".into(),
             OAuthAccessToken {
-                principal: "user".into(),
+                principal: principal.into(),
                 resource: "resource".into(),
                 expires_at: u64::MAX,
             },
@@ -171,13 +208,21 @@ mod tests {
             "hashed-refresh-token-key".into(),
             OAuthRefreshToken {
                 client_id: "client".into(),
-                principal: "user".into(),
+                principal: principal.into(),
                 resource: "resource".into(),
                 scope: "mcp".into(),
                 expires_at: u64::MAX,
             },
         );
-        store.save(snapshot).await.unwrap();
+        snapshot
+    }
+
+    #[tokio::test]
+    async fn durable_state_round_trips_without_plaintext_oauth_tokens() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let store = DurableStore::new(Some(path.clone()));
+        store.save(snapshot("user")).await.unwrap();
         let raw = fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("mcp_access_"));
         assert!(!raw.contains("mcp_refresh_"));
@@ -199,6 +244,23 @@ mod tests {
             loaded
                 .refresh_tokens
                 .contains_key("hashed-refresh-token-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_state_replaces_existing_snapshot() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let store = DurableStore::new(Some(path));
+        store.save(snapshot("first")).await.unwrap();
+        store.save(snapshot("second")).await.unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded
+                .access_tokens
+                .get("sha256:hashed-access-token-key")
+                .map(|token| token.principal.as_str()),
+            Some("second")
         );
     }
 }
