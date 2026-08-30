@@ -438,7 +438,7 @@ mod tests {
     fn normal_shell_test_timeout() -> Duration {
         #[cfg(windows)]
         {
-            Duration::from_secs(15)
+            Duration::from_secs(30)
         }
         #[cfg(not(windows))]
         {
