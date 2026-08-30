@@ -61,30 +61,37 @@ struct Capture {
 type SharedCapture = Arc<StdMutex<Capture>>;
 
 pub fn safe_child_environment(config: &ProcessConfig) -> HashMap<String, String> {
-    let mut environment = config
+    let environment = config
         .child_env_allowlist
         .iter()
         .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
         .collect::<HashMap<_, _>>();
 
     #[cfg(windows)]
-    for name in [
-        "SystemRoot",
-        "WINDIR",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "TEMP",
-        "TMP",
-        "COMSPEC",
-        "PATHEXT",
-    ] {
-        if let Ok(value) = std::env::var(name) {
-            environment.insert(name.to_string(), value);
+    {
+        let mut environment = environment;
+        for name in [
+            "SystemRoot",
+            "WINDIR",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "TEMP",
+            "TMP",
+            "COMSPEC",
+            "PATHEXT",
+        ] {
+            if let Ok(value) = std::env::var(name) {
+                environment.insert(name.to_string(), value);
+            }
         }
+        environment
     }
 
-    environment
+    #[cfg(not(windows))]
+    {
+        environment
+    }
 }
 
 pub fn native_shell_name() -> &'static str {
@@ -446,12 +453,9 @@ mod tests {
     #[tokio::test]
     async fn native_shell_executes_command() {
         let root = tempfile::tempdir().unwrap();
-        let output = run_shell(
-            "echo mcp-cross-platform",
-            root.path(),
-            &config(&["PATH", "HOME", "SystemRoot"]),
-        )
-        .await;
+        let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
+        cfg.shell_timeout = Duration::from_secs(5);
+        let output = run_shell("echo mcp-cross-platform", root.path(), &cfg).await;
         assert!(output.is_success(), "{}", output.render());
         assert!(output.stdout.contains("mcp-cross-platform"));
     }
@@ -460,6 +464,7 @@ mod tests {
     async fn shell_output_is_bounded_during_execution() {
         let root = tempfile::tempdir().unwrap();
         let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
+        cfg.shell_timeout = Duration::from_secs(5);
         cfg.stdout_limit = 128;
         #[cfg(windows)]
         let command = "Write-Output ('x' * 10000)";
