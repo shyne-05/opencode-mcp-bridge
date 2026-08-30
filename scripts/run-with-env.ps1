@@ -10,6 +10,10 @@ if (-not $EnvFile) {
     $EnvFile = Join-Path $env:LOCALAPPDATA 'mcp-bridge/env'
 }
 
+if (-not $env:HOME -and $env:USERPROFILE) {
+    $env:HOME = $env:USERPROFILE
+}
+
 if (Test-Path $EnvFile) {
     foreach ($line in Get-Content $EnvFile) {
         if ([string]::IsNullOrWhiteSpace($line) -or $line.TrimStart().StartsWith('#')) { continue }
