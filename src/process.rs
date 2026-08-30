@@ -94,10 +94,21 @@ pub fn safe_child_environment(config: &ProcessConfig) -> HashMap<String, String>
     }
 }
 
+#[cfg(windows)]
+fn windows_prefers_powershell() -> bool {
+    std::env::var("MCP_WINDOWS_SHELL")
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("powershell"))
+}
+
 pub fn native_shell_name() -> &'static str {
     #[cfg(windows)]
     {
-        "PowerShell"
+        if windows_prefers_powershell() {
+            "PowerShell"
+        } else {
+            "cmd"
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -116,10 +127,17 @@ pub fn native_shell_name() -> &'static str {
 fn native_shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
-        let mut process = Command::new("powershell.exe");
-        process.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
-        process.arg(command);
-        process
+        if windows_prefers_powershell() {
+            let mut process = Command::new("powershell.exe");
+            process.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+            process.arg(command);
+            process
+        } else {
+            let mut process = Command::new("cmd.exe");
+            process.args(["/d", "/s", "/c"]);
+            process.arg(command);
+            process
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -438,7 +456,7 @@ mod tests {
     fn normal_shell_test_timeout() -> Duration {
         #[cfg(windows)]
         {
-            Duration::from_secs(30)
+            Duration::from_secs(5)
         }
         #[cfg(not(windows))]
         {
@@ -471,7 +489,7 @@ mod tests {
         cfg.shell_timeout = normal_shell_test_timeout();
         cfg.stdout_limit = 128;
         #[cfg(windows)]
-        let command = "Write-Output ('x' * 10000)";
+        let command = "for /L %i in (1,1,10000) do @<nul set /p =x";
         #[cfg(not(windows))]
         let command = r#"python3 -c 'print("x" * 10000)'"#;
         let output = run_shell(command, root.path(), &cfg).await;
@@ -486,7 +504,7 @@ mod tests {
         let mut cfg = config(&["PATH", "HOME", "SystemRoot"]);
         cfg.shell_timeout = Duration::from_millis(100);
         #[cfg(windows)]
-        let command = "Start-Sleep -Seconds 30";
+        let command = "ping 127.0.0.1 -n 31 >nul";
         #[cfg(not(windows))]
         let command = "sleep 30";
         let started = std::time::Instant::now();
@@ -524,7 +542,7 @@ mod tests {
     #[test]
     fn native_shell_matches_platform() {
         #[cfg(windows)]
-        assert_eq!(native_shell_name(), "PowerShell");
+        assert!(matches!(native_shell_name(), "cmd" | "PowerShell"));
         #[cfg(target_os = "macos")]
         assert_eq!(native_shell_name(), "zsh");
         #[cfg(all(unix, not(target_os = "macos")))]
