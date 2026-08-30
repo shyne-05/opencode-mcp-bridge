@@ -61,11 +61,30 @@ struct Capture {
 type SharedCapture = Arc<StdMutex<Capture>>;
 
 pub fn safe_child_environment(config: &ProcessConfig) -> HashMap<String, String> {
-    config
+    let mut environment = config
         .child_env_allowlist
         .iter()
         .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
-        .collect()
+        .collect::<HashMap<_, _>>();
+
+    #[cfg(windows)]
+    for name in [
+        "SystemRoot",
+        "WINDIR",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+        "PATHEXT",
+    ] {
+        if let Ok(value) = std::env::var(name) {
+            environment.insert(name.to_string(), value);
+        }
+    }
+
+    environment
 }
 
 pub fn native_shell_name() -> &'static str {
@@ -427,7 +446,12 @@ mod tests {
     #[tokio::test]
     async fn native_shell_executes_command() {
         let root = tempfile::tempdir().unwrap();
-        let output = run_shell("echo mcp-cross-platform", root.path(), &config(&["PATH", "HOME", "SystemRoot"])).await;
+        let output = run_shell(
+            "echo mcp-cross-platform",
+            root.path(),
+            &config(&["PATH", "HOME", "SystemRoot"]),
+        )
+        .await;
         assert!(output.is_success(), "{}", output.render());
         assert!(output.stdout.contains("mcp-cross-platform"));
     }
