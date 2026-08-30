@@ -4,6 +4,22 @@ All notable changes to MCP Bridge are documented here.
 
 ## Unreleased
 
+## 0.6.0 — 2026-08-30
+
+### Added
+
+- Added native Linux, macOS, and Windows support while keeping the public MCP surface fixed at exactly five tools.
+- Added native macOS LaunchAgent helpers and Windows Scheduled Task, OAuth bootstrap, browser-launch, environment-runner, and release-packaging PowerShell helpers.
+- Added CI verification on `ubuntu-latest`, `macos-latest`, and `windows-latest`, including Rust tests, browser-worker regression, OAuth browser regression, Clippy, and native packaging.
+- Added runtime OS, architecture, and native-shell provenance to the root metadata endpoint.
+
+### Changed
+
+- Made host shell execution platform-aware: Bash on Linux, isolated zsh on macOS, and deterministic CMD on Windows by default, with `MCP_WINDOWS_SHELL=powershell` as an explicit PowerShell mode.
+- Made configuration and helper paths portable instead of assuming a drive letter, username, or home-directory layout; Windows helpers use user-scoped system locations such as LocalApplicationData.
+- Added native browser discovery/launch helpers using a dedicated CDP profile and loopback-only remote debugging, compatible with current Chrome remote-debugging requirements.
+- Hardened process-tree termination, durable-state replacement, canonical path confinement, and oversized-request rejection for platform-specific Windows/macOS behavior.
+
 ### Performance
 
 - Added a persistent Node/Playwright browser worker for `navigate`, `snapshot`, `click`, `fill`, and `evaluate`, eliminating repeated Node startup, Playwright module loading, and CDP reconnection from the browser hot path.

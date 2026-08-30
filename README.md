@@ -2,7 +2,7 @@
 
 MCP Bridge is a cross-platform Rust gateway that connects MCP clients such as ChatGPT to a local agent backend and, when explicitly enabled, to the owner's desktop shell and Chrome/Chromium session.
 
-Current package version: **0.5.2**.
+Current package version: **0.6.0**.
 
 The project keeps a deliberately small MCP contract, strong OAuth/authentication boundaries, bounded host-process execution, a persistent browser worker, and native helpers for Linux, macOS, and Windows.
 
