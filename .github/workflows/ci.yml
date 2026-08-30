@@ -68,6 +68,9 @@ jobs:
       - run: bash -n scripts/package-release.sh
       - run: bash -n scripts/deploy-user-service.sh
       - run: bash -n scripts/bootstrap-oauth.sh
+      - run: bash -n scripts/run-with-env.sh
+      - run: bash -n scripts/start-browser.sh
+      - run: bash -n scripts/install-user-service-macos.sh
       - name: Verify OAuth bootstrap helper
         run: |
           set -euo pipefail
@@ -103,7 +106,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($file in @('scripts/package-release.ps1','scripts/bootstrap-oauth.ps1')) {
+          foreach ($file in @(
+            'scripts/package-release.ps1',
+            'scripts/bootstrap-oauth.ps1',
+            'scripts/run-with-env.ps1',
+            'scripts/start-browser.ps1',
+            'scripts/install-user-service-windows.ps1'
+          )) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
