@@ -59,6 +59,11 @@ async fn index(State(state): State<AppState>) -> impl IntoResponse {
             "dirty": env!("MCP_BUILD_DIRTY") == "true",
             "browser_helper_protocol": browser::HELPER_PROTOCOL,
         },
+        "runtime": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "shell": process::native_shell_name(),
+        },
         "mcp": "/mcp",
         "profile": match state.config.profile {
             Profile::PersonalDesktop => "personal-desktop",
@@ -174,6 +179,9 @@ async fn main() {
     info!(
         address = %address,
         version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        native_shell = process::native_shell_name(),
         shell = state.config.tools.shell,
         browser = state.config.tools.browser,
         "mcp-bridge started"
