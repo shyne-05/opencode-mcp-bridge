@@ -5,21 +5,38 @@ if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw 'This launcher is for Windows only.'
 }
 
+function Get-SpecialFolderPath([Environment+SpecialFolder]$Folder) {
+    $Path = [Environment]::GetFolderPath($Folder)
+    if ($Path) { return $Path }
+    return $null
+}
+
+$LocalAppData = Get-SpecialFolderPath ([Environment+SpecialFolder]::LocalApplicationData)
+if (-not $LocalAppData) { $LocalAppData = $env:LOCALAPPDATA }
+if (-not $LocalAppData) { throw 'Unable to resolve the current user LocalApplicationData directory.' }
+
 $Port = 9222
 $Profile = if ($env:MCP_BROWSER_PROFILE_DIR) {
     $env:MCP_BROWSER_PROFILE_DIR
 } else {
-    Join-Path $env:LOCALAPPDATA 'mcp-bridge\chrome-profile'
+    Join-Path $LocalAppData 'mcp-bridge\chrome-profile'
 }
 New-Item -ItemType Directory -Path $Profile -Force | Out-Null
 
-$Candidates = @(
-    (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
-    (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe'),
-    (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
-) | Where-Object { $_ -and (Test-Path $_) }
+$Candidates = New-Object System.Collections.Generic.List[string]
+$ProgramFiles = Get-SpecialFolderPath ([Environment+SpecialFolder]::ProgramFiles)
+$ProgramFilesX86 = Get-SpecialFolderPath ([Environment+SpecialFolder]::ProgramFilesX86)
+
+foreach ($Base in @($ProgramFiles, $ProgramFilesX86, $LocalAppData)) {
+    if (-not $Base) { continue }
+    foreach ($Relative in @(
+        'Google\Chrome\Application\chrome.exe',
+        'Microsoft\Edge\Application\msedge.exe'
+    )) {
+        $Candidate = Join-Path $Base $Relative
+        if (Test-Path $Candidate) { $Candidates.Add($Candidate) }
+    }
+}
 
 $Browser = $Candidates | Select-Object -First 1
 if (-not $Browser) { throw 'No supported Chrome/Edge installation was found.' }
