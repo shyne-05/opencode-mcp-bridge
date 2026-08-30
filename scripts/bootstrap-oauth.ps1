@@ -13,11 +13,18 @@ function Fail([string]$Message, [int]$Code = 1) {
     exit $Code
 }
 
+function Get-LocalAppDataPath {
+    $Path = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if (-not $Path) { $Path = $env:LOCALAPPDATA }
+    if (-not $Path) { throw 'Unable to resolve the current user LocalApplicationData directory.' }
+    return $Path
+}
+
 $Username = if ($env:MCP_OAUTH_USERNAME) { $env:MCP_OAUTH_USERNAME } else { 'admin' }
 $EnvFile = if ($env:MCP_BRIDGE_ENV_FILE) {
     $env:MCP_BRIDGE_ENV_FILE
 } else {
-    Join-Path $env:LOCALAPPDATA 'mcp-bridge/env'
+    Join-Path (Get-LocalAppDataPath) 'mcp-bridge\env'
 }
 
 function Read-EnvValue([string]$Name) {
@@ -84,7 +91,8 @@ finally {
 }
 
 # Windows ACLs, rather than Unix mode bits, protect this per-user file. The
-# default LOCALAPPDATA directory is private to the current user profile.
+# resolved LocalApplicationData directory follows the current Windows profile,
+# including redirected profiles and non-C: system layouts.
 Write-Output 'OAuth bootstrap configured safely.'
 Write-Output "Username: $Username"
 Write-Output "Credential file: $EnvFile"
