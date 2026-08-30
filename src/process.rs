@@ -131,7 +131,7 @@ fn native_shell_command(command: &str) -> Command {
     #[cfg(target_os = "macos")]
     {
         let mut process = Command::new("/bin/zsh");
-        process.arg("-lc").arg(command);
+        process.args(["-f", "-c"]).arg(command);
         process
     }
     #[cfg(all(unix, not(target_os = "macos")))]
