@@ -12,7 +12,12 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    name: verify-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -23,17 +28,43 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - run: bash -n scripts/scan-secrets.sh
-      - run: bash scripts/scan-secrets.sh
       - run: cargo fmt --all -- --check
       - run: cargo check --locked --all-targets --all-features
       - run: cargo test --locked --all-features
       - run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global playwright@1.62.1
-      - run: NODE_PATH="$(npm root -g)" node tests/browser_worker.cjs
-      - run: NODE_PATH="$(npm root -g)" node tests/oauth_browser.cjs
+        if: runner.os != 'Windows'
+      - name: Install Playwright package on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD='1'
+          npm install --global playwright@1.62.1
+      - run: node tests/browser_worker.cjs
+      - run: node tests/oauth_browser.cjs
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: node --check scripts/browser.cjs
       - run: node --check tests/browser_worker.cjs
+      - run: node --check tests/oauth_browser.cjs
+      - name: Package release on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/package-release.sh
+      - name: Package release on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\package-release.ps1
+
+  linux-security-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: bash -n scripts/scan-secrets.sh
+      - run: bash scripts/scan-secrets.sh
       - run: bash -n scripts/package-release.sh
       - run: bash -n scripts/deploy-user-service.sh
       - run: bash -n scripts/bootstrap-oauth.sh
@@ -63,7 +94,40 @@ jobs:
             echo 'rotated password leaked to normal output' >&2
             exit 1
           fi
-      - run: scripts/package-release.sh
+
+  windows-script-validation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Parse PowerShell helpers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('scripts/package-release.ps1','scripts/bootstrap-oauth.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          }
+      - name: Verify Windows OAuth bootstrap helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'mcp-oauth-test'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $env:MCP_BRIDGE_ENV_FILE = Join-Path $root 'env'
+          $log = Join-Path $root 'bootstrap.log'
+          .\scripts\bootstrap-oauth.ps1 'http://127.0.0.1:3000' *> $log
+          $first = (Get-Content $env:MCP_BRIDGE_ENV_FILE | Where-Object { $_ -like 'MCP_OAUTH_PASSWORD=*' } | Select-Object -Last 1).Substring('MCP_OAUTH_PASSWORD='.Length)
+          if ($first.Length -lt 24) { throw 'generated password is too short' }
+          if ((Get-Content $log -Raw).Contains($first)) { throw 'bootstrap password leaked to normal output' }
+          .\scripts\bootstrap-oauth.ps1 'http://127.0.0.1:3000' *> $log
+          $second = (Get-Content $env:MCP_BRIDGE_ENV_FILE | Where-Object { $_ -like 'MCP_OAUTH_PASSWORD=*' } | Select-Object -Last 1).Substring('MCP_OAUTH_PASSWORD='.Length)
+          if ($first -ne $second) { throw 'normal bootstrap unexpectedly rotated password' }
+          .\scripts\bootstrap-oauth.ps1 -Rotate 'http://127.0.0.1:3000' *> $log
+          $rotated = (Get-Content $env:MCP_BRIDGE_ENV_FILE | Where-Object { $_ -like 'MCP_OAUTH_PASSWORD=*' } | Select-Object -Last 1).Substring('MCP_OAUTH_PASSWORD='.Length)
+          if ($first -eq $rotated) { throw 'rotate did not change password' }
+          if ((Get-Content $log -Raw).Contains($rotated)) { throw 'rotated password leaked to normal output' }
 
   audit:
     runs-on: ubuntu-latest
