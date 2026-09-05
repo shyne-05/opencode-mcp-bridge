@@ -859,7 +859,7 @@ mod tests {
         )
         .unwrap();
         let script = format!(
-            r#""{}" /d /s /c "echo quoted value" && echo "two words""#,
+            r#""{}" /d /s /c "echo quoted value"&&echo "two words""#,
             executable.display(),
         );
         let mut command = super::windows_cmd_command(&script);

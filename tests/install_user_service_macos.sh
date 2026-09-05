@@ -6,7 +6,9 @@ fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/mcp-bridge-macos-test.XXXXXX")"
 trap 'rm -rf "$fixture_root"' EXIT
 test_project="$fixture_root/repo & <code> \"quoted\" 'single'"
 test_user_dir="$fixture_root/user & <home> \"quoted\" 'single'"
-mkdir -p "$test_project/scripts" "$fixture_root/bin" "$test_user_dir"
+# Exercise logical paths on every platform, including macOS /var aliases.
+mkdir -p "$fixture_root/project-target/scripts" "$fixture_root/bin" "$test_user_dir"
+ln -s "$fixture_root/project-target" "$test_project"
 
 # Keep the real HOME untouched. Only the temporary installer's two user paths
 # resolve through a fixture variable; all commands and plist generation remain.
@@ -39,7 +41,9 @@ from pathlib import Path
 
 with open(sys.argv[1], "rb") as stream:
     plist = plistlib.load(stream)
-root = Path(os.environ["MCP_BRIDGE_TEST_ROOT"]).resolve()
+# The installer intentionally preserves logical paths from Bash pwd. Resolving
+# symlinks here would incorrectly reject valid /var versus /private/var paths.
+root = Path(os.environ["MCP_BRIDGE_TEST_ROOT"]).absolute()
 user_dir = Path(os.environ["MCP_BRIDGE_TEST_HOME"])
 assert plist["Label"] == os.environ["MCP_BRIDGE_LAUNCHD_LABEL"]
 assert plist["ProgramArguments"] == ["/bin/bash", str(root / "scripts/run-with-env.sh")]

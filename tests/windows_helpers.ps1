@@ -98,15 +98,27 @@ $global:LASTEXITCODE = 0
         $OAuthFile = Join-Path $FixtureRoot 'oauth [settings].env'
         [IO.File]::WriteAllText($OAuthFile, "CUSTOM=$Unicode", $Utf8)
         $Bootstrap = Join-Path $RepoRoot 'scripts\bootstrap-oauth.ps1'
-        $FirstLog = & $Bootstrap 'http://127.0.0.1:3000/'
+        $FirstResult = Invoke-PowerShellFixture $Bootstrap '-PublicOrigin "http://127.0.0.1:3000/"'
+        Assert-Fixture ($FirstResult.ExitCode -eq 0) ('IPv4 bootstrap failed: ' + $FirstResult.Output)
+        $FirstLog = $FirstResult.Output
         $FirstLines = [IO.File]::ReadAllLines($OAuthFile)
         $PasswordLine = $FirstLines | Where-Object { $_.StartsWith('MCP_OAUTH_PASSWORD=') }
-        $SecondLog = & $Bootstrap 'http://[::1]:3000'
+        $SecondLog = ''
+        foreach ($IPv6Origin in @('http://[::1]:3000', 'http://[0:0:0:0:0:0:0:1]:3000')) {
+            $IPv6Result = Invoke-PowerShellFixture $Bootstrap ('-PublicOrigin "' + $IPv6Origin + '"')
+            Assert-Fixture ($IPv6Result.ExitCode -eq 0) ('IPv6 bootstrap failed: ' + $IPv6Result.Output)
+            $SecondLog += $IPv6Result.Output
+            $OriginLine = [IO.File]::ReadAllLines($OAuthFile) | Where-Object { $_.StartsWith('MCP_PUBLIC_URL=') }
+            $SavedOrigin = [Uri]($OriginLine.Substring('MCP_PUBLIC_URL='.Length))
+            $SavedAddress = [Net.IPAddress]::Parse($SavedOrigin.DnsSafeHost.TrimStart('[').TrimEnd(']'))
+            Assert-Fixture ($SavedAddress.Equals([Net.IPAddress]::IPv6Loopback)) 'bootstrap changed the IPv6 address'
+            Assert-Fixture ($SavedOrigin.Scheme -eq 'http' -and $SavedOrigin.Port -eq 3000) 'bootstrap changed the IPv6 scheme or port'
+        }
         $SecondLines = [IO.File]::ReadAllLines($OAuthFile)
         Assert-Fixture ($SecondLines -ccontains "CUSTOM=$Unicode") 'bootstrap corrupted an existing UTF-8 entry'
         Assert-Fixture ($SecondLines -ccontains "MCP_OAUTH_USERNAME=$Unicode") 'bootstrap corrupted the username'
         Assert-Fixture ($SecondLines -ccontains $PasswordLine) 'bootstrap unexpectedly rotated the password'
-        Assert-Fixture ($SecondLines -contains 'MCP_PUBLIC_URL=http://[::1]:3000') 'bootstrap changed the IPv6 origin'
+        Assert-Fixture ($SecondLines -contains 'MCP_OAUTH_ALLOW_INSECURE_HTTP=true') 'bootstrap did not enable loopback HTTP'
         $Password = $PasswordLine.Substring('MCP_OAUTH_PASSWORD='.Length)
         Assert-Fixture ($Password.Length -ge 24) 'bootstrap generated a short password'
         Assert-Fixture (-not (($FirstLog + $SecondLog | Out-String).Contains($Password))) 'bootstrap printed its generated password'
@@ -130,7 +142,7 @@ $global:LASTEXITCODE = 0
         Assert-Fixture (-not (($RepairLog | Out-String).Contains($Repaired))) 'bootstrap printed the replacement password'
 
         $BeforeInvalid = [IO.File]::ReadAllText($OAuthFile)
-        foreach ($Origin in @('https://user:pass@example.test', 'https://example.test/path', 'https://example.test?query', 'https://example.test#fragment', 'https://example.test\path', 'http://example.test', 'http://127.0.0.2')) {
+        foreach ($Origin in @('https://user:pass@example.test', 'https://example.test/path', 'https://example.test?query', 'https://example.test#fragment', 'https://example.test\path', 'http://example.test', 'http://127.0.0.2', 'http://[::ffff:127.0.0.1]')) {
             $Result = Invoke-PowerShellFixture $Bootstrap ('-PublicOrigin "' + $Origin + '"')
             Assert-Fixture ($Result.ExitCode -eq 2) 'bootstrap accepted an invalid origin'
             Assert-Fixture ([IO.File]::ReadAllText($OAuthFile) -ceq $BeforeInvalid) 'invalid bootstrap modified configuration'

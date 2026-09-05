@@ -60,7 +60,14 @@ if ($PublicOrigin -match '[\x00-\x20\x7F\\]' -or
     Fail 'Use an HTTPS origin without credentials, a path, query, or fragment, or loopback HTTP for local testing.' 2
 }
 $OriginHost = $ParsedOrigin.DnsSafeHost.TrimStart('[').TrimEnd(']')
-$OriginIsLoopback = @('localhost', '127.0.0.1', '::1') -icontains $OriginHost
+# .NET Framework can expand DnsSafeHost to 0:0:0:0:0:0:0:1.
+# Compare parsed addresses, retaining the bridge's exact loopback allowlist.
+$OriginAddress = $null
+$OriginIsLoopback = $OriginHost -ieq 'localhost'
+if ([Net.IPAddress]::TryParse($OriginHost, [ref]$OriginAddress)) {
+    $OriginIsLoopback = $OriginAddress.Equals([Net.IPAddress]::Loopback) -or
+        $OriginAddress.Equals([Net.IPAddress]::IPv6Loopback)
+}
 if (($ParsedOrigin.Scheme -ne 'https' -and -not ($ParsedOrigin.Scheme -eq 'http' -and $OriginIsLoopback)) -or
     -not $ParsedOrigin.Host -or $ParsedOrigin.UserInfo -or $ParsedOrigin.Query -or $ParsedOrigin.Fragment -or
     ($ParsedOrigin.AbsolutePath -ne '/' -and $ParsedOrigin.AbsolutePath -ne '')) {

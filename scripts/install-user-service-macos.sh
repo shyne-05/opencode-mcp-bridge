@@ -25,11 +25,8 @@ bash scripts/package-release.sh
 mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
 
 xml_escape() {
-  local value="$1"
-  value="${value//&/\&amp;}"
-  value="${value//</\&lt;}"
-  value="${value//>/\&gt;}"
-  printf '%s' "$value"
+  # sed replacement escaping is consistent on macOS Bash 3.2 and newer Bash.
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
 LABEL_XML="$(xml_escape "$LABEL")"
