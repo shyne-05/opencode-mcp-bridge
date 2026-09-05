@@ -255,9 +255,11 @@ fn encode_powershell_script(script: &str) -> String {
 fn windows_powershell_command(
     command: &str,
 ) -> Result<(Command, Option<PowerShellScript>), String> {
+    // Resolve built-in cmdlets from this interpreter before scanning user or
+    // system module directories. Keep its reconstructed paths for other modules.
     // Console output must match the UTF-8 capture used by all platforms.
     let script = format!(
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n{command}"
+        "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath;\n[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n{command}"
     );
     let mut encoded = encode_powershell_script(&script);
     let mut script_file = None;
@@ -943,11 +945,13 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn powershell_starts_with_sanitized_environment() {
+    async fn powershell_loads_builtin_cmdlets_with_sanitized_environment() {
         let root = tempfile::tempdir().unwrap();
         let cfg = config(&["PATH", "HOME", "SystemRoot"]);
-        let (mut command, script_file) =
-            super::windows_powershell_command("[Console]::WriteLine('isolated runtime')").unwrap();
+        let (mut command, script_file) = super::windows_powershell_command(
+            "[Console]::WriteLine('isolated runtime'); Write-Output 'built-in module'; [Console]::WriteLine((Get-Item -LiteralPath '.').Exists)",
+        )
+        .unwrap();
         command
             .current_dir(root.path())
             .env_clear()
@@ -958,7 +962,10 @@ mod tests {
             super::run_command_supervised(command, Duration::from_secs(5), 1024, 1024, script_file)
                 .await;
         assert!(output.is_success(), "{}", output.render());
-        assert_eq!(output.stdout.trim(), "isolated runtime");
+        assert_eq!(
+            output.stdout.trim(),
+            "isolated runtime\r\nbuilt-in module\r\nTrue"
+        );
     }
 
     #[cfg(windows)]
