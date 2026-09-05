@@ -133,6 +133,10 @@ pub fn safe_child_environment(config: &ProcessConfig) -> HashMap<String, String>
         let mut environment = environment;
         for name in [
             "SystemRoot",
+            // PowerShell/.NET expand these installation roots while starting
+            // and constructing default module paths in a cleared environment.
+            "SystemDrive",
+            "ProgramFiles",
             "WINDIR",
             "USERPROFILE",
             "APPDATA",
@@ -935,6 +939,26 @@ mod tests {
         assert!(output.is_success(), "{}", output.render());
         assert_eq!(output.stdout.trim(), "15000\r\ncafé 雪");
         assert!(!path.exists(), "completed long script must be removed");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_starts_with_sanitized_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = config(&["PATH", "HOME", "SystemRoot"]);
+        let (mut command, script_file) =
+            super::windows_powershell_command("[Console]::WriteLine('isolated runtime')").unwrap();
+        command
+            .current_dir(root.path())
+            .env_clear()
+            .envs(safe_child_environment(&cfg))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output =
+            super::run_command_supervised(command, Duration::from_secs(5), 1024, 1024, script_file)
+                .await;
+        assert!(output.is_success(), "{}", output.render());
+        assert_eq!(output.stdout.trim(), "isolated runtime");
     }
 
     #[cfg(windows)]

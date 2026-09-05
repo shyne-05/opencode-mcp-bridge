@@ -5,7 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/mcp-bridge-macos-test.XXXXXX")"
 trap 'rm -rf "$fixture_root"' EXIT
 test_project="$fixture_root/repo & <code> \"quoted\" 'single'"
-test_user_dir="$fixture_root/user & <home> \"quoted\" 'single'"
+# Native macOS TMPDIR can end in a slash. Keep redundant separators here to
+# verify equivalent log paths without changing their configured spelling.
+test_user_dir="$fixture_root//user & <home> \"quoted\" 'single'"
 # Exercise logical paths on every platform, including macOS /var aliases.
 mkdir -p "$fixture_root/project-target/scripts" "$fixture_root/bin" "$test_user_dir"
 ln -s "$fixture_root/project-target" "$test_project"
@@ -48,13 +50,13 @@ user_dir = Path(os.environ["MCP_BRIDGE_TEST_HOME"])
 assert plist["Label"] == os.environ["MCP_BRIDGE_LAUNCHD_LABEL"]
 assert plist["ProgramArguments"] == ["/bin/bash", str(root / "scripts/run-with-env.sh")]
 assert plist["WorkingDirectory"] == str(root)
-assert plist["EnvironmentVariables"] == {
-    "PATH": os.environ["PATH"],
-    "MCP_BRIDGE_ENV_FILE": os.environ["MCP_BRIDGE_TEST_ENV_PATH"],
-}
+environment = plist["EnvironmentVariables"]
+assert set(environment) == {"PATH", "MCP_BRIDGE_ENV_FILE"}
+assert environment["PATH"] == os.environ["PATH"]
+assert Path(environment["MCP_BRIDGE_ENV_FILE"]) == Path(os.environ["MCP_BRIDGE_TEST_ENV_PATH"])
 assert "never-persist-fixture-secret" not in Path(sys.argv[1]).read_text()
-assert plist["StandardOutPath"] == str(user_dir / "Library/Logs/mcp-bridge/stdout.log")
-assert plist["StandardErrorPath"] == str(user_dir / "Library/Logs/mcp-bridge/stderr.log")
+assert Path(plist["StandardOutPath"]) == user_dir / "Library/Logs/mcp-bridge/stdout.log"
+assert Path(plist["StandardErrorPath"]) == user_dir / "Library/Logs/mcp-bridge/stderr.log"
 assert plist["RunAtLoad"] is True
 assert plist["KeepAlive"] is True
 assert plist["ProcessType"] == "Interactive"

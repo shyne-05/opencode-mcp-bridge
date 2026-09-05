@@ -29,10 +29,27 @@ function Assert-Fixture([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
-function Invoke-PowerShellFixture([string]$Script, [string]$Arguments) {
+function Invoke-PowerShellFixture([string]$Script, [hashtable]$Parameters) {
     $Info = New-Object Diagnostics.ProcessStartInfo
     $Info.FileName = $HostExecutable
-    $Info.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $Script + '" ' + $Arguments
+    # Windows PowerShell 5.1 can glob a bracket-containing launch directory and
+    # start in PSHOME instead. Set the provider location literally in the child.
+    $QuotedRoot = "'" + $FixtureRoot.Replace("'", "''") + "'"
+    $QuotedScript = "'" + $Script.Replace("'", "''") + "'"
+    $Assignments = foreach ($Entry in $Parameters.GetEnumerator()) {
+        $Key = "'" + $Entry.Key.Replace("'", "''") + "'"
+        $Value = if ($Entry.Value -is [bool]) {
+            if ($Entry.Value) { '$true' } else { '$false' }
+        } else {
+            "'" + ([string]$Entry.Value).Replace("'", "''") + "'"
+        }
+        $Key + '=' + $Value
+    }
+    $Command = '$ErrorActionPreference = ''Stop''; $global:LASTEXITCODE = 0; ' +
+        'Set-Location -LiteralPath ' + $QuotedRoot + '; $FixtureParameters = @{' +
+        ($Assignments -join ';') + '}; & ' + $QuotedScript + ' @FixtureParameters; exit $LASTEXITCODE'
+    $EncodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    $Info.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $EncodedCommand
     $Info.WorkingDirectory = $FixtureRoot
     $Info.UseShellExecute = $false
     $Info.RedirectStandardOutput = $true
@@ -75,7 +92,7 @@ $global:LASTEXITCODE = 0
     $Literal = '"$(throw ''must not execute'') $env:HOME \path = value"'
     $Lines = @('# comment', '', "BRIDGE_TEST_UNICODE=$Unicode", "BRIDGE_TEST_LITERAL=$Literal", 'BRIDGE_TEST_LAST=final=value')
     [IO.File]::WriteAllText($EnvFile, ($Lines -join ([string][char]13 + [char]10)), $Utf8)
-    $Result = Invoke-PowerShellFixture $Runner ('-EnvFile "' + $EnvFile + '"')
+    $Result = Invoke-PowerShellFixture $Runner @{ EnvFile = $EnvFile }
     Assert-Fixture ($Result.ExitCode -eq 0) ('runner failed: ' + $Result.Output)
     $Observed = [IO.File]::ReadAllText($env:MCP_BRIDGE_TEST_CAPTURE) | ConvertFrom-Json
     Assert-Fixture ($Observed.unicode -ceq $Unicode) 'runner changed UTF-8 data'
@@ -84,7 +101,7 @@ $global:LASTEXITCODE = 0
 
     [IO.File]::Delete($env:MCP_BRIDGE_TEST_CAPTURE)
     [IO.File]::WriteAllText($EnvFile, 'invalid-secret-canary=value', $Utf8)
-    $Result = Invoke-PowerShellFixture $Runner ('-EnvFile "' + $EnvFile + '"')
+    $Result = Invoke-PowerShellFixture $Runner @{ EnvFile = $EnvFile }
     Assert-Fixture ($Result.ExitCode -ne 0) 'runner accepted an invalid environment name'
     Assert-Fixture (-not $Result.Output.Contains('secret-canary')) 'runner revealed malformed secret contents'
     Assert-Fixture (-not [IO.File]::Exists($env:MCP_BRIDGE_TEST_CAPTURE)) 'runner executed after invalid configuration'
@@ -98,17 +115,20 @@ $global:LASTEXITCODE = 0
         $OAuthFile = Join-Path $FixtureRoot 'oauth [settings].env'
         [IO.File]::WriteAllText($OAuthFile, "CUSTOM=$Unicode", $Utf8)
         $Bootstrap = Join-Path $RepoRoot 'scripts\bootstrap-oauth.ps1'
-        $FirstResult = Invoke-PowerShellFixture $Bootstrap '-PublicOrigin "http://127.0.0.1:3000/"'
+        $FirstResult = Invoke-PowerShellFixture $Bootstrap @{ PublicOrigin = 'http://127.0.0.1:3000/' }
         Assert-Fixture ($FirstResult.ExitCode -eq 0) ('IPv4 bootstrap failed: ' + $FirstResult.Output)
         $FirstLog = $FirstResult.Output
         $FirstLines = [IO.File]::ReadAllLines($OAuthFile)
+        Assert-Fixture (@($FirstLines | Where-Object { $_.StartsWith('MCP_PUBLIC_URL=') }).Count -eq 1) 'bootstrap did not write an origin to the expected relative configuration file'
+        Assert-Fixture (@($FirstLines | Where-Object { $_.StartsWith('MCP_OAUTH_PASSWORD=') }).Count -eq 1) 'bootstrap did not write one password entry to the expected configuration file'
         $PasswordLine = $FirstLines | Where-Object { $_.StartsWith('MCP_OAUTH_PASSWORD=') }
         $SecondLog = ''
         foreach ($IPv6Origin in @('http://[::1]:3000', 'http://[0:0:0:0:0:0:0:1]:3000')) {
-            $IPv6Result = Invoke-PowerShellFixture $Bootstrap ('-PublicOrigin "' + $IPv6Origin + '"')
+            $IPv6Result = Invoke-PowerShellFixture $Bootstrap @{ PublicOrigin = $IPv6Origin }
             Assert-Fixture ($IPv6Result.ExitCode -eq 0) ('IPv6 bootstrap failed: ' + $IPv6Result.Output)
             $SecondLog += $IPv6Result.Output
             $OriginLine = [IO.File]::ReadAllLines($OAuthFile) | Where-Object { $_.StartsWith('MCP_PUBLIC_URL=') }
+            Assert-Fixture ($null -ne $OriginLine) 'IPv6 bootstrap did not update the expected relative configuration file'
             $SavedOrigin = [Uri]($OriginLine.Substring('MCP_PUBLIC_URL='.Length))
             $SavedAddress = [Net.IPAddress]::Parse($SavedOrigin.DnsSafeHost.TrimStart('[').TrimEnd(']'))
             Assert-Fixture ($SavedAddress.Equals([Net.IPAddress]::IPv6Loopback)) 'bootstrap changed the IPv6 address'
@@ -133,7 +153,7 @@ $global:LASTEXITCODE = 0
             if ($_.StartsWith('MCP_OAUTH_PASSWORD=')) { 'MCP_OAUTH_PASSWORD=' + (' ' * 24) } else { $_ }
         }
         [IO.File]::WriteAllLines($OAuthFile, [string[]]$WhitespaceLines, $Utf8)
-        $Result = Invoke-PowerShellFixture $Bootstrap '-Show'
+        $Result = Invoke-PowerShellFixture $Bootstrap @{ Show = $true }
         Assert-Fixture ($Result.ExitCode -eq 1) 'bootstrap showed whitespace-only credentials'
         $RepairLog = & $Bootstrap 'https://example.test'
         $RepairedLine = [IO.File]::ReadAllLines($OAuthFile) | Where-Object { $_.StartsWith('MCP_OAUTH_PASSWORD=') }
@@ -143,12 +163,12 @@ $global:LASTEXITCODE = 0
 
         $BeforeInvalid = [IO.File]::ReadAllText($OAuthFile)
         foreach ($Origin in @('https://user:pass@example.test', 'https://example.test/path', 'https://example.test?query', 'https://example.test#fragment', 'https://example.test\path', 'http://example.test', 'http://127.0.0.2', 'http://[::ffff:127.0.0.1]')) {
-            $Result = Invoke-PowerShellFixture $Bootstrap ('-PublicOrigin "' + $Origin + '"')
+            $Result = Invoke-PowerShellFixture $Bootstrap @{ PublicOrigin = $Origin }
             Assert-Fixture ($Result.ExitCode -eq 2) 'bootstrap accepted an invalid origin'
             Assert-Fixture ([IO.File]::ReadAllText($OAuthFile) -ceq $BeforeInvalid) 'invalid bootstrap modified configuration'
         }
         $env:MCP_OAUTH_USERNAME = 'bad' + [char]10 + 'username'
-        $Result = Invoke-PowerShellFixture $Bootstrap '-PublicOrigin "https://example.test"'
+        $Result = Invoke-PowerShellFixture $Bootstrap @{ PublicOrigin = 'https://example.test' }
         Assert-Fixture ($Result.ExitCode -eq 2) 'bootstrap accepted a multiline username'
         Assert-Fixture ([IO.File]::ReadAllText($OAuthFile) -ceq $BeforeInvalid) 'invalid username modified configuration'
     }
