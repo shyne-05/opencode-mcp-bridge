@@ -1,6 +1,7 @@
 use crate::{
     backend::{Backend, PromptRequest, resolve_directory},
     browser::run_browser_action,
+    config::ToolConfig,
     process::{native_shell_name, run_shell},
     state::{AppState, Principal},
     util::{optional_string_arg, required_string_arg},
@@ -15,7 +16,81 @@ use rmcp::{
     service::RequestContext,
 };
 use serde_json::{Map, Value, json};
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::{
+    borrow::Cow,
+    sync::{Arc, LazyLock},
+    time::{Duration, Instant},
+};
+
+// Tool schemas are immutable and shared by every server session.
+static TOOL_DEFINITIONS: LazyLock<[Tool; 5]> = LazyLock::new(|| {
+    [
+        tool(
+            "bridge_prompt",
+            "Send a prompt to the configured local agent backend.",
+            json!({
+                "prompt": {"type": "string"},
+                "sessionId": {"type": "string"},
+                "agent": {"type": "string"},
+                "model": {"type": "string"},
+                "directory": {"type": "string"}
+            }),
+            &["prompt"],
+            ToolAnnotations::new().read_only(false).open_world(true),
+        ),
+        tool(
+            "bridge_read_file",
+            "Read an existing file inside BRIDGE_WORKDIR through the configured backend.",
+            json!({"path": {"type": "string"}}),
+            &["path"],
+            ToolAnnotations::new().read_only(true).open_world(false),
+        ),
+        tool(
+            "bridge_search",
+            "Search the configured backend workspace.",
+            json!({"pattern": {"type": "string"}}),
+            &["pattern"],
+            ToolAnnotations::new().read_only(true).open_world(false),
+        ),
+        tool(
+            "shell",
+            "Run an unrestricted native shell command on the host (Bash on Linux, Zsh on macOS, PowerShell on Windows) with a sanitized child environment, bounded output, timeout, process-tree cleanup, and concurrency control. Intended for a trusted personal workstation.",
+            json!({
+                "command": {"type": "string"},
+                "directory": {"type": "string"}
+            }),
+            &["command"],
+            ToolAnnotations::new()
+                .read_only(false)
+                .destructive(true)
+                .open_world(true),
+        ),
+        tool(
+            "browser",
+            "Control a local Chrome debugging session. Browser cookies and page data are available to this tool.",
+            json!({
+                "action": {"type": "string", "enum": ["navigate", "tabs", "close", "evaluate", "new", "snapshot", "click", "fill"]},
+                "url": {"type": "string"},
+                "targetId": {"type": "string"},
+                "expression": {"type": "string"},
+                "selector": {"type": "string"},
+                "value": {"type": "string"}
+            }),
+            &["action"],
+            ToolAnnotations::new().read_only(false).open_world(true),
+        ),
+    ]
+});
+
+fn enabled_tools(config: &ToolConfig) -> impl Iterator<Item = &'static Tool> + '_ {
+    TOOL_DEFINITIONS
+        .iter()
+        .filter(move |tool| match tool.name.as_ref() {
+            "shell" => config.shell,
+            "browser" => config.browser,
+            _ => true,
+        })
+}
 
 #[derive(Clone)]
 pub struct BridgeServer {
@@ -28,68 +103,7 @@ impl BridgeServer {
     }
 
     fn tool_list(&self) -> Vec<Tool> {
-        let mut tools = vec![
-            tool(
-                "bridge_prompt",
-                "Send a prompt to the configured local agent backend.",
-                json!({
-                    "prompt": {"type": "string"},
-                    "sessionId": {"type": "string"},
-                    "agent": {"type": "string"},
-                    "model": {"type": "string"},
-                    "directory": {"type": "string"}
-                }),
-                &["prompt"],
-                ToolAnnotations::new().read_only(false).open_world(true),
-            ),
-            tool(
-                "bridge_read_file",
-                "Read an existing file inside BRIDGE_WORKDIR through the configured backend.",
-                json!({"path": {"type": "string"}}),
-                &["path"],
-                ToolAnnotations::new().read_only(true).open_world(false),
-            ),
-            tool(
-                "bridge_search",
-                "Search the configured backend workspace.",
-                json!({"pattern": {"type": "string"}}),
-                &["pattern"],
-                ToolAnnotations::new().read_only(true).open_world(false),
-            ),
-        ];
-
-        if self.state.config.tools.shell {
-            tools.push(tool(
-                "shell",
-                "Run an unrestricted native shell command on the host (Bash on Linux, Zsh on macOS, PowerShell on Windows) with a sanitized child environment, bounded output, timeout, process-tree cleanup, and concurrency control. Intended for a trusted personal workstation.",
-                json!({
-                    "command": {"type": "string"},
-                    "directory": {"type": "string"}
-                }),
-                &["command"],
-                ToolAnnotations::new()
-                    .read_only(false)
-                    .destructive(true)
-                    .open_world(true),
-            ));
-        }
-        if self.state.config.tools.browser {
-            tools.push(tool(
-                "browser",
-                "Control a local Chrome debugging session. Browser cookies and page data are available to this tool.",
-                json!({
-                    "action": {"type": "string", "enum": ["navigate", "tabs", "close", "evaluate", "new", "snapshot", "click", "fill"]},
-                    "url": {"type": "string"},
-                    "targetId": {"type": "string"},
-                    "expression": {"type": "string"},
-                    "selector": {"type": "string"},
-                    "value": {"type": "string"}
-                }),
-                &["action"],
-                ToolAnnotations::new().read_only(false).open_world(true),
-            ));
-        }
-        tools
+        enabled_tools(&self.state.config.tools).cloned().collect()
     }
 
     async fn dispatch(
@@ -98,32 +112,54 @@ impl BridgeServer {
         name: &str,
         args: &Map<String, Value>,
     ) -> Result<String, String> {
-        let backend = Backend::new(&self.state);
         match name {
-            "bridge_read_file" => backend.read_file(required_string_arg(args, "path")?).await,
-            "bridge_search" => backend.search(required_string_arg(args, "pattern")?).await,
-            "bridge_prompt" => {
-                backend
-                    .prompt(
-                        principal,
-                        PromptRequest {
-                            prompt: required_string_arg(args, "prompt")?,
-                            session_id: optional_string_arg(args, "sessionId"),
-                            directory: optional_string_arg(args, "directory"),
-                            agent: optional_string_arg(args, "agent"),
-                            model: optional_string_arg(args, "model"),
-                        },
-                    )
-                    .await
+            "bridge_read_file" | "bridge_search" | "bridge_prompt" => {
+                let queued_at = Instant::now();
+                let _permit = self.state.backend_slots.acquire("backend").await?;
+                let queue_ms = queued_at.elapsed().as_secs_f64() * 1_000.0;
+                let budget = Duration::from_secs(if name == "bridge_prompt" { 120 } else { 30 });
+                let backend = Backend::new(&self.state);
+                let started_at = Instant::now();
+                let result = tokio::time::timeout(budget, async {
+                    match name {
+                        "bridge_read_file" => {
+                            backend.read_file(required_string_arg(args, "path")?).await
+                        }
+                        "bridge_search" => {
+                            backend.search(required_string_arg(args, "pattern")?).await
+                        }
+                        "bridge_prompt" => {
+                            backend
+                                .prompt(
+                                    principal,
+                                    PromptRequest {
+                                        prompt: required_string_arg(args, "prompt")?,
+                                        session_id: optional_string_arg(args, "sessionId"),
+                                        directory: optional_string_arg(args, "directory"),
+                                        agent: optional_string_arg(args, "agent"),
+                                        model: optional_string_arg(args, "model"),
+                                    },
+                                )
+                                .await
+                        }
+                        _ => Err(format!("unknown backend tool: {name}")),
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| Err(format!("{name} timed out after {}s", budget.as_secs())));
+                tracing::info!(
+                    target: "mcp_bridge::latency",
+                    tool = name,
+                    queue_ms,
+                    elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0,
+                    success = result.is_ok(),
+                    "backend tool execution latency"
+                );
+                result
             }
             "shell" if self.state.config.tools.shell => {
                 let queued_at = Instant::now();
-                let permit = self
-                    .state
-                    .shell_slots
-                    .acquire()
-                    .await
-                    .map_err(|_| "shell concurrency limiter closed".to_string())?;
+                let permit = self.state.shell_slots.acquire("shell").await?;
                 let queue_ms = queued_at.elapsed().as_secs_f64() * 1_000.0;
                 let directory = resolve_directory(
                     &self.state.config.workdir,
@@ -182,7 +218,9 @@ impl ServerHandler for BridgeServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.tool_list().into_iter().find(|tool| tool.name == name)
+        enabled_tools(&self.state.config.tools)
+            .find(|tool| tool.name == name)
+            .cloned()
     }
 
     async fn call_tool(
@@ -246,4 +284,79 @@ fn tool(
         Arc::new(schema),
     )
     .with_annotations(annotations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TOOL_DEFINITIONS, enabled_tools};
+    use crate::config::ToolConfig;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[test]
+    fn tool_availability_and_order_follow_each_configuration() {
+        for (shell, browser, expected) in [
+            (
+                false,
+                false,
+                vec!["bridge_prompt", "bridge_read_file", "bridge_search"],
+            ),
+            (
+                true,
+                false,
+                vec![
+                    "bridge_prompt",
+                    "bridge_read_file",
+                    "bridge_search",
+                    "shell",
+                ],
+            ),
+            (
+                false,
+                true,
+                vec![
+                    "bridge_prompt",
+                    "bridge_read_file",
+                    "bridge_search",
+                    "browser",
+                ],
+            ),
+            (
+                true,
+                true,
+                vec![
+                    "bridge_prompt",
+                    "bridge_read_file",
+                    "bridge_search",
+                    "shell",
+                    "browser",
+                ],
+            ),
+        ] {
+            let config = ToolConfig { shell, browser };
+            let actual: Vec<_> = enabled_tools(&config)
+                .map(|tool| tool.name.as_ref())
+                .collect();
+            assert_eq!(actual, expected, "shell={shell}, browser={browser}");
+        }
+    }
+
+    #[test]
+    fn returned_definitions_share_schemas_and_preserve_required_arguments() {
+        let config = ToolConfig {
+            shell: true,
+            browser: true,
+        };
+        let listed: Vec<_> = enabled_tools(&config).cloned().collect();
+        for ((definition, listed), required) in TOOL_DEFINITIONS
+            .iter()
+            .zip(&listed)
+            .zip(["prompt", "path", "pattern", "command", "action"])
+        {
+            assert!(Arc::ptr_eq(&definition.input_schema, &listed.input_schema));
+            assert_eq!(listed.input_schema["type"], json!("object"));
+            assert_eq!(listed.input_schema["required"], json!([required]));
+            assert_eq!(listed.input_schema["additionalProperties"], json!(false));
+        }
+    }
 }

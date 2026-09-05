@@ -44,7 +44,8 @@ Install only what your deployment uses:
 
 - Rust **1.88** or newer
 - a compatible backend service for `bridge_prompt`, `bridge_read_file`, and `bridge_search`
-- Node.js + Playwright + Chrome/Chromium for `browser`
+- Node.js for release packaging and service installation/update helpers, even when `browser` is disabled
+- Node.js + Playwright + Chrome/Chromium at runtime when `browser` is enabled
 - Linux guarded deployment: `systemd --user`, `curl`, `ss`, Python 3, and `flock`
 - macOS service install: `launchctl`
 - Windows service install: Windows PowerShell 5.1+ and Task Scheduler
@@ -77,7 +78,7 @@ cargo build --release --locked
 
 Release binaries are written below `target/release/` (`mcp-bridge` on Unix, `mcp-bridge.exe` on Windows).
 
-To package the bridge together with the browser helper:
+To package the bridge together with the browser helper, install Node.js and run:
 
 ```bash
 # Linux/macOS
@@ -105,7 +106,7 @@ MCP_ENABLE_SHELL=true
 MCP_ENABLE_BROWSER=true
 ```
 
-`BRIDGE_WORKDIR` accepts either a relative or absolute existing directory and is canonicalized at startup. Leaving it relative avoids assumptions such as `C:\Users\name`, `D:\project`, or `/home/name`.
+`BRIDGE_WORKDIR` accepts either a relative or absolute existing directory and is canonicalized at startup. A relative path keeps the configuration independent of the operating system and checkout location.
 
 Native helpers derive their paths from the current user and from the repository location at runtime. Useful overrides include:
 
@@ -144,15 +145,39 @@ The default listener is `127.0.0.1:3000`.
 
 ### Linux
 
-The repository includes the reference user service at `deploy/mcp-bridge.service` and a guarded self-update/deployment path:
+For a first installation, prepare `~/.config/mcp-bridge/env` with your settings and either bearer-token or OAuth authentication. See [Portable configuration](#portable-configuration), [Authentication](#authentication), and [OAuth setup](docs/OAUTH_SETUP.md). The service reads this file directly.
+
+From the repository root, package the release and copy the reference user service:
+
+```bash
+bash scripts/package-release.sh
+mkdir -p "$HOME/.config/systemd/user"
+cp deploy/mcp-bridge.service "$HOME/.config/systemd/user/mcp-bridge.service"
+```
+
+Open `~/.config/systemd/user/mcp-bridge.service` in a text editor. Set `WorkingDirectory` and `ExecStart` to the absolute paths for your actual checkout, for example:
+
+```ini
+WorkingDirectory=/absolute/path/to/mcp-bridge
+ExecStart=/absolute/path/to/mcp-bridge/target/release/mcp-bridge
+```
+
+Keep `ExecStart` pointing directly to the release binary so guarded updates can verify it. Adjust `EnvironmentFile` too if your configuration file is elsewhere. Then load and start the service:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now mcp-bridge.service
+```
+
+For later updates to an already running service, use:
 
 ```bash
 bash scripts/deploy-user-service.sh
 ```
 
-The guarded deploy requires a clean `main`, fast-forwards from `origin/main`, packages the release, restarts the service, verifies process identity/listener/health/build provenance, and rolls back the packaged binary/helper if verification fails.
+The guarded update requires an active service, a working backend for readiness checks, and a clean `main` checkout. It fast-forwards from `origin/main`, packages the release, restarts the service, verifies process identity/listener/health/build provenance, and rolls back the packaged binary/helper if verification fails.
 
-If the checked-in service paths do not match where you cloned the repository, adjust the installed user unit before using the guarded deploy helper.
+An optional OpenCode backend unit is provided at `deploy/opencode-mcp-backend.service` for Linux installations with OpenCode at `~/.opencode/bin/opencode`. It serves only `127.0.0.1:4097`, matching the default backend URL. Installing MCP Bridge does not install or enable this backend template; configure the backend separately before using backend tools.
 
 ### macOS
 
@@ -162,7 +187,9 @@ Install/update the LaunchAgent from the repository root:
 bash scripts/install-user-service-macos.sh
 ```
 
-The helper derives the repository path at runtime, packages the release, writes a user LaunchAgent under `~/Library/LaunchAgents`, and starts it with `launchctl`.
+Run the installer from a terminal where `cargo` and `node` work. It derives the repository path, packages the release, and starts a user LaunchAgent under `~/Library/LaunchAgents`. The LaunchAgent remembers that terminal's executable search path and the selected `MCP_BRIDGE_ENV_FILE`, so Homebrew/nvm tools and custom configuration remain available when it runs in the background.
+
+The default label is `io.mcpbridge.agent`. To update an existing LaunchAgent that uses another label, set `MCP_BRIDGE_LAUNCHD_LABEL` to that existing label before running the installer.
 
 ### Windows
 
@@ -172,7 +199,7 @@ Install/update the user Scheduled Task from PowerShell:
 .\scripts\install-user-service-windows.ps1
 ```
 
-The helper derives the repository path at runtime, packages the release, creates/updates the current user's scheduled task, and starts it. It does not require a hard-coded drive letter or username.
+The helper derives the repository path, packages the release, and starts the current user's scheduled task. It remembers an explicit `MCP_BRIDGE_ENV_FILE` path and attempts to resume a previously running task if the update fails. PowerShell helpers read configuration as UTF-8 and support paths containing spaces, Unicode, and brackets.
 
 ## Browser automation
 
@@ -200,6 +227,8 @@ The `browser` tool supports:
 - `evaluate`
 
 Scripted actions use a persistent Node/Playwright worker connected to Chrome CDP instead of spawning a new Node process for every action. The helper protocol is `mcp-browser-helper/2`.
+
+On macOS, browser discovery includes both `/Applications` and `~/Applications`. On Windows, custom browser profile paths are passed as one argument, including paths with spaces.
 
 Chrome CDP is expected on loopback and must not be exposed publicly.
 
@@ -257,6 +286,14 @@ Important defaults:
 | `MCP_SHELL_CONCURRENCY` | `2` |
 | `MCP_BROWSER_CONCURRENCY` | `1` |
 
+The bridge bounds waiting work automatically, with no extra settings required. Each tool group admits at most four times its running limit (running plus waiting), and queued calls wait at most **5 seconds**. A busy response means that call did not start. Backend tools share **4** running slots; health checks remain independent.
+
+Backend file reads and searches have a **30-second** execution deadline, prompts have **120 seconds** across session creation and message submission, and backend health checks have **3 seconds**. Every browser action uses the existing browser timeout across its full operation, including worker startup and HTTP requests; CDP response bodies are capped at **1 MiB**.
+
+OAuth credentials and reusable session ownership are saved before a successful response. If saving fails, an authorization code or refresh token remains usable for a retry. Cleanup skips disk writes when durable state has not changed.
+
+On shutdown, the bridge handles Ctrl+C and Unix SIGTERM, allows active requests up to **10 seconds** to finish, and bounds background/browser cleanup to another **2 seconds**.
+
 Requests with a declared `Content-Length` above the MCP/HTTP limit are rejected before their bodies are read; the body-limit layer remains in place for streamed/chunked requests.
 
 Child processes do not inherit the bridge's full environment. Only an allowlist of ordinary runtime/desktop variables is reconstructed, and secret-looking variables cannot be added through `MCP_CHILD_ENV_ALLOW`.
@@ -276,7 +313,7 @@ These endpoints make mixed-version or stale deployments observable.
 
 ## CI
 
-CI validates the project on **Ubuntu, macOS, and Windows**. The matrix covers formatting, compile/check, Rust tests, browser-worker regression, OAuth browser regression, Clippy, Node syntax, and native release packaging. Additional jobs cover Rust security audit, Linux deployment/security helpers, Windows PowerShell 5.1/7 parsing, CMD availability, and Windows OAuth bootstrap behavior.
+CI is configured to validate the project on **Ubuntu, macOS, and Windows**. The matrix covers formatting, compile/check, Rust tests, browser-worker regression, OAuth browser regression, Clippy, Node syntax, and native release packaging. Additional jobs cover Rust security audit, Linux deployment/security helpers, Windows PowerShell 5.1/7 parsing, CMD availability, and Windows OAuth bootstrap behavior.
 
 ## MCP schema stability
 

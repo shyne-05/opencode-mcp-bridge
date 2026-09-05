@@ -2,14 +2,18 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-Push-Location $Root
+Push-Location -LiteralPath $Root
 try {
+    if (-not (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) {
+        throw 'Node.js is required to package and validate the browser helper.'
+    }
+
     cargo build --release --locked
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
     $TargetDir = Join-Path $Root 'target/release'
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-    Copy-Item (Join-Path $Root 'scripts/browser.cjs') (Join-Path $TargetDir 'browser.cjs') -Force
+    Copy-Item -LiteralPath (Join-Path $Root 'scripts/browser.cjs') -Destination (Join-Path $TargetDir 'browser.cjs') -Force
 
     node --check (Join-Path $TargetDir 'browser.cjs')
     if ($LASTEXITCODE -ne 0) { throw 'browser helper syntax check failed' }
@@ -26,7 +30,7 @@ try {
         throw "unexpected browser helper protocol: $Protocol"
     }
 
-    $VersionLine = Select-String -Path (Join-Path $Root 'Cargo.toml') -Pattern '^version = "([^"]+)"' | Select-Object -First 1
+    $VersionLine = Select-String -LiteralPath (Join-Path $Root 'Cargo.toml') -Pattern '^version = "([^"]+)"' | Select-Object -First 1
     if (-not $VersionLine) { throw 'could not determine package version' }
     $Version = $VersionLine.Matches[0].Groups[1].Value
     Write-Output "Packaged MCP Bridge $Version with browser helper protocol mcp-browser-helper/2"

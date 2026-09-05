@@ -21,7 +21,8 @@ $Profile = if ($env:MCP_BROWSER_PROFILE_DIR) {
 } else {
     Join-Path $LocalAppData 'mcp-bridge\chrome-profile'
 }
-New-Item -ItemType Directory -Path $Profile -Force | Out-Null
+$Profile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Profile)
+[System.IO.Directory]::CreateDirectory($Profile) | Out-Null
 
 $Candidates = New-Object System.Collections.Generic.List[string]
 $ProgramFiles = Get-SpecialFolderPath ([Environment+SpecialFolder]::ProgramFiles)
@@ -34,17 +35,20 @@ foreach ($Base in @($ProgramFiles, $ProgramFilesX86, $LocalAppData)) {
         'Microsoft\Edge\Application\msedge.exe'
     )) {
         $Candidate = Join-Path $Base $Relative
-        if (Test-Path $Candidate) { $Candidates.Add($Candidate) }
+        if (Test-Path -LiteralPath $Candidate) { $Candidates.Add($Candidate) }
     }
 }
 
 $Browser = $Candidates | Select-Object -First 1
 if (-not $Browser) { throw 'No supported Chrome/Edge installation was found.' }
 
+# Start-Process joins argument strings without quoting them. Double trailing
+# backslashes before the closing quote so a profile ending in \ stays intact.
+$QuotedProfile = '"' + ($Profile -replace '(\\+)$', '$1$1') + '"'
 $Arguments = @(
     '--remote-debugging-address=127.0.0.1',
     "--remote-debugging-port=$Port",
-    "--user-data-dir=$Profile"
+    "--user-data-dir=$QuotedProfile"
 )
 Start-Process -FilePath $Browser -ArgumentList $Arguments | Out-Null
 Write-Output "Started $Browser with CDP on 127.0.0.1:$Port"

@@ -19,11 +19,15 @@ pub fn now_seconds() -> u64 {
 }
 
 pub fn trunc(value: &str, limit: usize) -> String {
-    if value.chars().count() <= limit {
-        value.to_string()
+    let end = if value.len() <= limit {
+        value.len()
     } else {
-        value.chars().take(limit).collect()
-    }
+        value
+            .char_indices()
+            .nth(limit)
+            .map_or(value.len(), |(index, _)| index)
+    };
+    value[..end].to_owned()
 }
 
 pub fn required_string_arg<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
@@ -72,5 +76,11 @@ mod tests {
     fn limits_text_by_characters() {
         assert_eq!(trunc("hello", 10), "hello");
         assert_eq!(trunc("héllo", 3), "hél");
+        assert_eq!(trunc("🦀你好", 2), "🦀你");
+        assert_eq!(trunc("🦀你好", 3), "🦀你好");
+        assert_eq!(trunc("🦀你好", 0), "");
+        assert_eq!(trunc("", 0), "");
+        assert_eq!(trunc("hello", 5), "hello");
+        assert_eq!(trunc("héllo", usize::MAX), "héllo");
     }
 }

@@ -3,7 +3,13 @@ use crate::{
     util::{now_millis, trunc},
 };
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+const SEARCH_OUTPUT_LIMIT: usize = 15_000;
 
 pub struct PromptRequest<'a> {
     pub prompt: &'a str,
@@ -30,6 +36,7 @@ impl<'a> Backend<'a> {
         self.state
             .http
             .get(self.url("/global/health"))
+            .timeout(Duration::from_secs(3))
             .send()
             .await
             .is_ok_and(|response| response.status().is_success())
@@ -70,7 +77,10 @@ impl<'a> Backend<'a> {
             .map_err(|error| format!("backend request failed: {error}"))?;
         let text =
             response_text_checked(response, self.state.config.backend_response_limit).await?;
-        filter_search_results(&self.state.config.workdir, &text)
+        let workdir = self.state.config.workdir.clone();
+        tokio::task::spawn_blocking(move || filter_search_results(&workdir, &text))
+            .await
+            .map_err(|error| format!("backend search task failed: {error}"))?
     }
 
     pub async fn prompt(
@@ -119,7 +129,7 @@ impl<'a> Backend<'a> {
             if session_id.is_empty() {
                 return Err("failed to create backend session".to_string());
             }
-            self.state.remember_session(principal, &session_id).await;
+            self.state.remember_session(principal, &session_id).await?;
         }
 
         let mut body = json!({"parts": [{"type": "text", "text": prompt}]});
@@ -130,14 +140,12 @@ impl<'a> Backend<'a> {
             body["model"] = json!({"providerID": provider, "modelID": model_id});
         }
         let directory = directory.to_string_lossy().into_owned();
-        let endpoint = "message";
         let response = self
             .state
             .http
             .post(self.url(&format!(
-                "/session/{}/{}",
-                urlencoding::encode(&session_id),
-                endpoint
+                "/session/{}/message",
+                urlencoding::encode(&session_id)
             )))
             .query(&[("directory", directory)])
             .json(&body)
@@ -178,22 +186,45 @@ fn filter_search_results(base: &Path, text: &str) -> Result<String, String> {
     else {
         return Err("backend returned an invalid search result list".to_string());
     };
-    let filtered = items
-        .into_iter()
-        .filter(|item| {
-            let Some(path) = item
-                .get("path")
-                .and_then(|p| p.get("text"))
-                .and_then(Value::as_str)
-            else {
-                return false;
-            };
-            resolve_existing_path(base, path).is_ok()
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&filtered)
-        .map(|value| trunc(&value, 15_000))
-        .map_err(|error| format!("failed to encode search results: {error}"))
+    let canonical_base = std::fs::canonicalize(base)
+        .map_err(|error| format!("invalid BRIDGE_WORKDIR '{}': {error}", base.display()))?;
+    let mut allowed_paths = HashMap::new();
+    let mut output = String::from("[");
+    let mut output_chars = 2; // Reserve both array brackets.
+    for item in &items {
+        let Some(path) = item
+            .get("path")
+            .and_then(|path| path.get("text"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        // Search often returns many matches in the same file. Resolve each path
+        // once for this response, while still checking symlinks against the root.
+        let allowed = allowed_paths.entry(path).or_insert_with(|| {
+            std::fs::canonicalize(base.join(path))
+                .is_ok_and(|resolved| resolved.starts_with(&canonical_base))
+        });
+        if !*allowed {
+            continue;
+        }
+        let encoded = serde_json::to_string(item)
+            .map_err(|error| format!("failed to encode search results: {error}"))?;
+        let separator = usize::from(output.len() > 1);
+        let remaining = SEARCH_OUTPUT_LIMIT - output_chars;
+        let encoded_chars = encoded.chars().take(remaining + 1).count();
+        if encoded_chars + separator > remaining {
+            break;
+        }
+        if separator != 0 {
+            output.push(',');
+        }
+        output.push_str(&encoded);
+        output_chars += encoded_chars + separator;
+    }
+    // Limit whole entries so even a capped response remains valid JSON.
+    output.push(']');
+    Ok(output)
 }
 
 pub fn resolve_existing_file(base: &Path, requested: &str) -> Result<PathBuf, String> {
@@ -259,7 +290,8 @@ async fn response_text_checked(
     limit: usize,
 ) -> Result<String, String> {
     let (status, bytes, truncated_body) = read_response_limited(response, limit).await?;
-    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
     if !status.is_success() {
         return Err(format!(
             "backend returned status {status}: {}",
@@ -289,17 +321,23 @@ async fn response_json_checked(response: reqwest::Response, limit: usize) -> Res
     serde_json::from_str(&text).map_err(|error| format!("backend returned invalid JSON: {error}"))
 }
 
-async fn read_response_limited(
+pub(crate) async fn read_response_limited(
     mut response: reqwest::Response,
     limit: usize,
 ) -> Result<(reqwest::StatusCode, Vec<u8>, bool), String> {
     let status = response.status();
-    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or(8 * 1024)
+        .min(limit)
+        .min(64 * 1024);
+    let mut bytes = Vec::with_capacity(capacity);
     let mut truncated = false;
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| format!("failed to read backend response: {error}"))?
+        .map_err(|error| format!("failed to read HTTP response: {error}"))?
     {
         let remaining = limit.saturating_sub(bytes.len());
         let keep = remaining.min(chunk.len());
@@ -315,8 +353,8 @@ async fn read_response_limited(
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_search_results, read_response_limited, resolve_directory, resolve_existing_file,
-        resolve_existing_path,
+        SEARCH_OUTPUT_LIMIT, filter_search_results, read_response_limited, resolve_directory,
+        resolve_existing_file, resolve_existing_path, response_json_checked, response_text_checked,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -348,6 +386,72 @@ mod tests {
         assert_eq!(body.len(), 1024);
         assert!(truncated);
         server.abort();
+    }
+
+    fn test_response(body: impl Into<Vec<u8>>, status: u16) -> reqwest::Response {
+        axum::http::Response::builder()
+            .status(status)
+            .body(body.into())
+            .unwrap()
+            .into()
+    }
+
+    #[tokio::test]
+    async fn backend_response_reader_handles_exact_and_zero_limits() {
+        for (body, limit, expected, truncated) in [
+            ("hello", 5, "hello", false),
+            ("hello", 4, "hell", true),
+            ("", 0, "", false),
+            ("hello", 0, "", true),
+        ] {
+            let (_, actual, was_truncated) = read_response_limited(test_response(body, 200), limit)
+                .await
+                .unwrap();
+            assert_eq!(actual, expected.as_bytes());
+            assert_eq!(was_truncated, truncated);
+        }
+    }
+
+    #[tokio::test]
+    async fn backend_text_preserves_lossy_utf8_and_status_errors() {
+        assert_eq!(
+            response_text_checked(test_response("héllo", 200), 100)
+                .await
+                .unwrap(),
+            "héllo"
+        );
+        assert_eq!(
+            response_text_checked(test_response(vec![b'a', 0xff], 200), 100)
+                .await
+                .unwrap(),
+            "a�"
+        );
+        assert_eq!(
+            response_text_checked(test_response("é🦀", 200), 3)
+                .await
+                .unwrap(),
+            "é�\n[backend response truncated at configured byte limit]"
+        );
+        let error = response_text_checked(test_response("unavailable", 503), 100)
+            .await
+            .unwrap_err();
+        assert!(error.contains("503"));
+        assert!(error.ends_with("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn backend_json_rejects_truncated_payloads() {
+        let body = r#"{"id":"session"}"#;
+        assert_eq!(
+            response_json_checked(test_response(body, 200), body.len())
+                .await
+                .unwrap()["id"],
+            "session"
+        );
+        let error = response_json_checked(test_response(body, 200), body.len() - 1)
+            .await
+            .unwrap_err();
+        assert!(error.contains("exceeded MCP_BACKEND_RESPONSE_LIMIT_BYTES"));
     }
 
     #[test]
@@ -395,6 +499,49 @@ mod tests {
         let items = filtered.as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["path"]["text"], "inside.txt");
+    }
+
+    #[test]
+    fn bridge_search_caps_whole_entries_and_keeps_valid_json() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("inside.txt"), "inside").unwrap();
+        let input = serde_json::Value::Array(
+            (0..300)
+                .map(|index| {
+                    serde_json::json!({
+                        "path": {"text": "inside.txt"},
+                        "lines": {"text": "🦀".repeat(100)},
+                        "line_number": index,
+                    })
+                })
+                .collect(),
+        );
+        let output = filter_search_results(root.path(), &input.to_string()).unwrap();
+        assert!(output.chars().count() <= SEARCH_OUTPUT_LIMIT);
+        let filtered: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let filtered = filtered.as_array().unwrap();
+        assert!(!filtered.is_empty());
+        assert!(filtered.len() < 300);
+        for (index, item) in filtered.iter().enumerate() {
+            assert_eq!(item, &input[index]);
+        }
+    }
+
+    #[test]
+    fn bridge_search_handles_oversized_entries_and_invalid_items() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("inside.txt"), "inside").unwrap();
+        let input = serde_json::json!([
+            {},
+            {"path": {"text": "missing.txt"}},
+            {"path": {"text": "inside.txt"}, "lines": {"text": "x".repeat(SEARCH_OUTPUT_LIMIT)}}
+        ]);
+        assert_eq!(
+            filter_search_results(root.path(), &input.to_string()).unwrap(),
+            "[]"
+        );
+        assert!(filter_search_results(root.path(), "{}").is_err());
+        assert!(filter_search_results(root.path(), "invalid").is_err());
     }
 
     #[cfg(unix)]

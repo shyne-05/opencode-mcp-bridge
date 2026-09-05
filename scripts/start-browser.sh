@@ -7,8 +7,11 @@ case "$(uname -s)" in
     PROFILE="${MCP_BROWSER_PROFILE_DIR:-$HOME/Library/Application Support/mcp-bridge/chrome-profile}"
     candidates=(
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
       "/Applications/Chromium.app/Contents/MacOS/Chromium"
+      "$HOME/Applications/Chromium.app/Contents/MacOS/Chromium"
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+      "$HOME/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
     )
     ;;
   Linux)
@@ -36,5 +39,5 @@ done
 }
 
 mkdir -p "$PROFILE"
-"$browser" --remote-debugging-address=127.0.0.1 --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" >/dev/null 2>&1 &
+"$browser" --remote-debugging-address=127.0.0.1 --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" </dev/null >/dev/null 2>&1 &
 printf 'Started %s with CDP on 127.0.0.1:%s\n' "$browser" "$PORT"

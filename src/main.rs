@@ -3,6 +3,7 @@ mod backend;
 mod browser;
 mod config;
 mod durable;
+mod limits;
 mod oauth;
 mod process;
 mod state;
@@ -24,12 +25,42 @@ use rmcp::transport::streamable_http_server::{
 };
 use serde_json::json;
 use state::AppState;
+use std::{future::IntoFuture, process::ExitCode, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tools::BridgeServer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
+
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const SHUTDOWN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(error) = result {
+                warn!(%error, "failed to install Ctrl-C handler");
+            }
+        }
+        () = terminate => {}
+    }
+}
 
 fn allowed_mcp_hosts(config: &Config) -> Vec<String> {
     let mut hosts = vec![
@@ -108,7 +139,7 @@ async fn ready(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -124,16 +155,6 @@ async fn main() {
         eprintln!("startup error: {error}");
         std::process::exit(2);
     });
-    oauth::spawn_cleanup_task(state.clone());
-    if state.config.tools.browser {
-        let browser_state = state.clone();
-        tokio::spawn(async move {
-            if let Err(error) = browser::warm_browser_worker(&browser_state).await {
-                warn!(%error, "failed to prewarm persistent browser worker");
-            }
-        });
-    }
-
     let cancellation_token = CancellationToken::new();
     let mcp_config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_mcp_hosts(&state.config))
@@ -191,6 +212,16 @@ async fn main() {
         }
     };
 
+    let oauth_cleanup = oauth::spawn_cleanup_task(state.clone());
+    let browser_prewarm = state.config.tools.browser.then(|| {
+        let browser_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = browser::warm_browser_worker(&browser_state).await {
+                warn!(%error, "failed to prewarm persistent browser worker");
+            }
+        })
+    });
+
     info!(
         address = %address,
         version = env!("CARGO_PKG_VERSION"),
@@ -205,21 +236,56 @@ async fn main() {
         warn!("MCP_ALLOW_UNAUTHENTICATED is enabled; use only for local development");
     }
 
-    let shutdown = async move {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            warn!(%error, "failed to install Ctrl-C handler");
+    let http_shutdown = CancellationToken::new();
+    let mut server = Box::pin(
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(http_shutdown.clone().cancelled_owned())
+        .into_future(),
+    );
+    let result = tokio::select! {
+        result = &mut server => result,
+        () = shutdown_signal() => {
+            info!("stopping listener and draining active requests");
+            http_shutdown.cancel();
+            match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut server).await {
+                Ok(result) => result,
+                Err(_) => {
+                    warn!("active requests exceeded the shutdown drain deadline");
+                    Ok(())
+                }
+            }
         }
-        cancellation_token.cancel();
     };
+    drop(server);
 
-    if let Err(error) = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
+    // Keep MCP sessions alive until HTTP requests have had a chance to finish.
+    cancellation_token.cancel();
+    oauth_cleanup.abort();
+    if let Some(task) = &browser_prewarm {
+        task.abort();
+    }
+    let cleanup = async {
+        let _ = oauth_cleanup.await;
+        if let Some(task) = browser_prewarm {
+            let _ = task.await;
+        }
+        browser::shutdown_browser_worker(&state).await;
+    };
+    if tokio::time::timeout(SHUTDOWN_CLEANUP_TIMEOUT, cleanup)
+        .await
+        .is_err()
     {
+        warn!("background cleanup exceeded the shutdown deadline");
+    }
+
+    if let Err(error) = result {
         eprintln!("server error: {error}");
-        std::process::exit(1);
+        ExitCode::FAILURE
+    } else {
+        info!("mcp-bridge stopped");
+        ExitCode::SUCCESS
     }
 }

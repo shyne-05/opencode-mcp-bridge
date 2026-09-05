@@ -1,10 +1,10 @@
 # MCP Bridge 0.4 Upgrade Plan (superseded)
 
-This historical plan is retained for context. The current 0.5.2 release is the source of truth for the public API and configuration. The active MCP surface is `bridge_prompt`, `bridge_read_file`, `bridge_search`, and the opt-in `shell` and `browser` tools; the removed session wrappers, agent wrapper, and `MCP_AGENT_*` settings must not be reintroduced.
+This archived plan records the 0.4 migration. Use the [README](../README.md) and [changelog](../CHANGELOG.md) for current setup, public API, and configuration. The active MCP surface is `bridge_prompt`, `bridge_read_file`, `bridge_search`, and the opt-in `shell` and `browser` tools; the removed session wrappers, agent wrapper, and `MCP_AGENT_*` settings must not be reintroduced.
 
 ## Objective
 
-Turn MCP Bridge into a production-quality personal desktop automation gateway while preserving the capabilities that make it useful on the owner's workstation: unrestricted host shell access when explicitly enabled, desktop workflows through the shell, browser automation, backend-agent sessions, and local file/project workflows.
+Turn MCP Bridge into a production-quality personal desktop automation gateway while preserving the capabilities needed for local desktop workflows: unrestricted host shell access when explicitly enabled, desktop workflows through the shell, browser automation, backend-agent sessions, and local file/project workflows.
 
 The upgrade must improve security and maintainability **without weakening the personal-desktop use case**.
 
@@ -15,7 +15,7 @@ The upgrade must improve security and maintainability **without weakening the pe
 - Preserve `shell` and `browser` as opt-in host tools.
 - Preserve bearer token, named bearer token, OAuth, and URL-path token compatibility.
 - Preserve `BRIDGE_WORKDIR` confinement semantics for working directories.
-- Keep the running 0.3.0 process untouched until the 0.4.0 source passes all verification gates.
+- Validate the migration in an isolated instance before replacing an existing deployment.
 - Do not commit or print credentials.
 
 ## Phase 1 — Architecture and protocol
@@ -37,7 +37,7 @@ The upgrade must improve security and maintainability **without weakening the pe
 
 1. Keep shell access unrestricted when enabled; do not introduce a command allowlist.
 2. Stop child commands from inheriting MCP/OAuth/tunnel secrets.
-3. Build an explicit safe environment for child processes, including desktop-session variables required for Fedora/Wayland/DBus/PipeWire workflows.
+3. Build an explicit safe environment for child processes, including the display, D-Bus, and audio variables needed by desktop applications.
 4. Allow explicitly configured extra environment variable names for advanced workflows.
 5. Put spawned commands in their own Unix process group and terminate the complete group on timeout.
 6. Bound captured stdout/stderr while the process is running instead of truncating only after completion.
@@ -46,7 +46,7 @@ The upgrade must improve security and maintainability **without weakening the pe
 
 ## Phase 3 — Capability profiles
 
-1. Add a `personal-desktop` profile optimized for the owner's workstation.
+1. Add a `personal-desktop` profile for local desktop automation.
 2. Add a `server-secure` profile with host tools disabled by default.
 3. Split the host-tool master switch into independent shell/browser switches while retaining the legacy master switch for compatibility.
 4. Keep desktop variables available in `personal-desktop` mode without exposing bridge credentials.
@@ -111,7 +111,7 @@ Verification gates:
 6. release build
 7. smoke test a temporary 0.4.0 instance on a different port
 8. verify OAuth metadata and MCP tool discovery
-9. verify Spotify/application launch and audio control compatibility without exposing secrets
+9. verify desktop application launch and audio control without exposing secrets
 10. final dead-code/duplication/repository hygiene audit
 
 ## Phase 8 — Cleanup and documentation
@@ -128,7 +128,7 @@ The upgrade is complete only when the repository is modular, current-protocol ca
 
 ## Implementation status — completed 2026-08-29
 
-All planned phases were implemented in the 0.4.0 source tree and the active release has since been cleaned up and hardened as 0.5.2.
+The following outcomes describe the historical 0.4 implementation. Later maintenance and API changes are recorded in the changelog.
 
 Verified outcomes:
 
@@ -140,11 +140,11 @@ Verified outcomes:
 - canonical backend read/search confinement with traversal and symlink escape rejection, plus persistent session ownership and real execution status
 - OAuth authorization-code + PKCE flow, CIMD client discovery, DCR fallback, access-token authentication, offline access, durable hashed refresh-token rotation, expired-state cleanup, bounded token/client state, and trusted-peer throttling
 - static bearer-token and URL-path-token compatibility
-- trusted shell workflows retain Spotify/application launch and PipeWire audio control
+- trusted shell workflows retain desktop application launch and audio control
 - current Playwright browser snapshot support
 - formatter, locked check, unit tests, clippy `-D warnings`, Node syntax validation, locked release build, and RustSec audit gates
 
-The original 0.3.0 migration was completed only after the exact release artifact passed all gates; the current deployment helper applies the same discipline to 0.5.2 and keeps a rollback package outside the repository.
+This migration is complete. Use the current deployment documentation rather than this archived checklist for later releases.
 
 ## Completion status
 

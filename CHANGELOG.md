@@ -4,6 +4,46 @@ All notable changes to MCP Bridge are documented here.
 
 ## Unreleased
 
+### Performance
+
+- Bound shell, browser, and backend admission with automatic five-second queue deadlines; keep health checks independent from backend work.
+- Apply one existing browser deadline to the entire action, and use short backend health/read deadlines without adding configuration.
+- Skip unchanged durable cleanup writes and hash new access-token keys once at issuance.
+- Cache immutable MCP tool definitions and browser page target IDs across requests.
+- Truncate text after the requested Unicode prefix, reuse backend response buffers, and cache search path checks in a blocking task.
+- Replace sorting with linear selection for ordinary OAuth capacity eviction and reduce rate-limit lock contention.
+- Skip durable snapshot construction in memory-only mode and stream JSON through a bounded write buffer.
+- Drain child stdout and stderr concurrently and stop locking capture buffers after their output limits are reached.
+
+### Fixed
+
+- Replace personalized service defaults with generic project names and remove workstation-specific documentation.
+- Scan staged and untracked publication inputs, narrow synthetic credential exceptions, and ignore durable-state crash leftovers.
+- Preserve macOS LaunchAgent executable/configuration paths and discover browsers installed in the user's Applications directory.
+- Read Windows helper configuration as UTF-8, preserve literal paths and browser profile arguments, and attempt to resume a previously running scheduled task after a failed update.
+- Preserve CMD command quoting and PowerShell Unicode output, and finish bounded Windows process-tree cleanup when a running request is cancelled.
+- Replace Windows durable snapshots directly without moving the previous snapshot out of the way first.
+- Handle CRLF and empty final OAuth password assignments in the Unix bootstrap helper, and reject malformed bootstrap inputs before writing configuration.
+- Report missing Node.js before release packaging starts its Rust build, and document Linux first installation separately from updates.
+- Persist OAuth token exchanges before consuming old credentials, so disk failures preserve retryability and concurrent exchanges have one winner.
+- Persist reusable session ownership before sending a new prompt and complete in-flight commits consistently after request cancellation.
+- Validate browser HTTP status and bound CDP response bodies to 1 MiB.
+- Handle Unix SIGTERM and Ctrl+C with bounded request draining and browser/background cleanup.
+- Serialize durable snapshot capture with file writes and retain the writer lock when a request is cancelled.
+- Terminate cancelled shell jobs and their Unix process groups, abort detached output-reader tasks, and enforce output limits on diagnostics and lossy UTF-8.
+- Bound browser worker frames, recover from malformed request shapes, and discard cancelled workers before another request can consume a stale response.
+- Keep bounded search responses valid JSON by returning complete entries; an oversized first entry produces an empty array.
+- Preserve unrelated OAuth tokens when replacing a key at capacity, avoid allocating rate-limit buckets on reads, and protect refreshed client metadata from stale removal.
+- Honor repeated and case-insensitive Cache-Control directives, including fresh retrieval for no-cache metadata.
+- Read CRLF and unterminated environment-file lines literally, forward runner arguments, and escape macOS LaunchAgent XML values.
+- Refresh build provenance after source and active Git reference changes, including linked worktrees.
+
+### Tests
+
+- Add native macOS Bash and Windows PowerShell 5.1/7 helper CI jobs, including isolated Unicode/path, configuration, installation-failure, and browser argument fixtures.
+- Add regressions for cancellation, durable write ordering, output and frame bounds, search JSON, OAuth cache capacity, shared tool schemas, browser target caching, environment parsing, and macOS plist escaping.
+- Prevent favicon requests from overwriting the OAuth browser-test callback and verify the authorized resource in token responses.
+
 ## 0.6.0 — 2026-08-30
 
 ### Added

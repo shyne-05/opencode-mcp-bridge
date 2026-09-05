@@ -88,7 +88,13 @@ function bridgeEnvironment(port, origin) {
 (async () => {
   let callbackRequest;
   const callback = http.createServer((request, response) => {
-    callbackRequest = new URL(request.url, `http://${request.headers.host}`);
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    if (url.pathname !== "/callback") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    callbackRequest = url;
     response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
     response.end("OAuth browser regression callback reached");
   });
@@ -177,14 +183,17 @@ function bridgeEnvironment(port, origin) {
           response.request().method() === "POST",
         { timeout: 10000 },
       ),
-      page.waitForURL((url) => url.origin === `http://127.0.0.1:${callbackPort}`, {
+      page.waitForURL((url) => url.origin === `http://127.0.0.1:${callbackPort}` && url.pathname === "/callback", {
         timeout: 10000,
       }),
       page.getByRole("button", { name: "Authorize" }).click(),
     ]);
     assert(authorizePost.status() === 302, "successful OAuth login POST did not return 302");
 
+    // A browser can request a favicon after redirecting; it must not overwrite the callback.
+    await page.request.get(`http://127.0.0.1:${callbackPort}/favicon.ico`);
     assert(callbackRequest, "registered callback was not reached");
+    assert(callbackRequest.pathname === "/callback", "registered callback path changed");
     assert(callbackRequest.origin === `http://127.0.0.1:${callbackPort}`, "final destination origin changed");
     const authorizationCode = callbackRequest.searchParams.get("code");
     assert(authorizationCode, "authorization response did not contain a code");
@@ -207,6 +216,7 @@ function bridgeEnvironment(port, origin) {
     const tokens = await tokenResponse.json();
     assert(typeof tokens.access_token === "string", "token response did not contain access_token");
     assert(typeof tokens.refresh_token === "string", "token response did not contain refresh_token");
+    assert(tokens.resource === `${bridgeOrigin}/mcp`, "token response did not preserve the authorized resource");
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     const capturedOutput = `${bridgeOutput}\n${consoleMessages.join("\n")}`;

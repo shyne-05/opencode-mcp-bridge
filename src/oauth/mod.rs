@@ -5,7 +5,7 @@ mod response;
 use crate::{
     state::{
         AppState, AuthorizationCode, OAuthAccessToken, OAuthClient, OAuthClientKind,
-        OAuthRefreshToken,
+        OAuthRefreshToken, access_token_lookup_key,
     },
     util::{constant_time_equal, now_seconds, pkce_challenge, random_token},
 };
@@ -354,6 +354,20 @@ pub async fn token(
     State(state): State<AppState>,
     Form(request): Form<OAuthTokenRequest>,
 ) -> Response {
+    let guard = state.durable_mutations.clone().lock_owned().await;
+    tokio::spawn(async move {
+        // Keep the transaction alive through save and publication if HTTP disconnects.
+        let _guard = guard;
+        exchange_tokens(&state, request).await
+    })
+    .await
+    .unwrap_or_else(|error| {
+        tracing::error!(%error, "OAuth token transaction failed");
+        oauth_token_error("temporarily_unavailable", "token transaction failed")
+    })
+}
+
+async fn exchange_tokens(state: &AppState, request: OAuthTokenRequest) -> Response {
     if !state.config.oauth.enabled() {
         return oauth_token_error("temporarily_unavailable", "OAuth is not configured");
     }
@@ -404,16 +418,14 @@ pub async fn token(
                 return oauth_token_error("invalid_grant", "PKCE verification failed");
             }
 
-            let consumed = state.oauth_codes.write().await.remove(code_value);
-            if consumed.is_none() {
-                return oauth_token_error("invalid_grant", "authorization code was already used");
-            }
             issue_oauth_tokens(
-                &state,
+                state,
                 client_id,
                 &code.principal,
                 &code.resource,
                 &code.scope,
+                Some(code_value),
+                None,
             )
             .await
         }
@@ -445,21 +457,14 @@ pub async fn token(
             {
                 return oauth_token_error("invalid_grant", "refresh token is invalid or expired");
             }
-            if state
-                .oauth_refresh_tokens
-                .write()
-                .await
-                .remove(&refresh_key)
-                .is_none()
-            {
-                return oauth_token_error("invalid_grant", "refresh token was already used");
-            }
             issue_oauth_tokens(
-                &state,
+                state,
                 client_id,
                 &refresh.principal,
                 &refresh.resource,
                 &refresh.scope,
+                None,
+                Some(&refresh_key),
             )
             .await
         }
@@ -473,46 +478,63 @@ async fn issue_oauth_tokens(
     principal: &str,
     resource: &str,
     scope: &str,
+    consumed_code: Option<&str>,
+    consumed_refresh: Option<&str>,
 ) -> Response {
     let now = now_seconds();
     let access_token = random_token("mcp_access");
     let refresh_token = random_token("mcp_refresh");
     let access_expires_at = now + state.config.oauth.access_token_ttl;
-    {
-        let mut access_tokens = state.oauth_access_tokens.write().await;
-        insert_bounded(
-            &mut access_tokens,
-            access_token.clone(),
-            OAuthAccessToken {
-                principal: principal.to_string(),
-                resource: resource.to_string(),
-                expires_at: access_expires_at,
-            },
-            state.config.oauth.max_access_tokens,
-            |value| value.expires_at,
-        );
+    let mut snapshot = if state.config.state_file.is_none() {
+        crate::durable::DurableSnapshot {
+            access_tokens: state.oauth_access_tokens.read().await.clone(),
+            refresh_tokens: state.oauth_refresh_tokens.read().await.clone(),
+            ..Default::default()
+        }
+    } else {
+        state.durable_snapshot().await
+    };
+    if let Some(key) = consumed_refresh {
+        snapshot.refresh_tokens.remove(key);
     }
-    {
-        let mut refresh_tokens = state.oauth_refresh_tokens.write().await;
-        insert_bounded(
-            &mut refresh_tokens,
-            refresh_token_key(&refresh_token),
-            OAuthRefreshToken {
-                client_id: client_id.to_string(),
-                principal: principal.to_string(),
-                resource: resource.to_string(),
-                scope: scope.to_string(),
-                expires_at: now + state.config.oauth.refresh_token_ttl,
-            },
-            state.config.oauth.max_refresh_tokens,
-            |value| value.expires_at,
-        );
-    }
-    if let Err(error) = state.persist_durable().await {
-        return oauth_token_error(
-            "temporarily_unavailable",
-            &format!("failed to persist refresh token: {error}"),
-        );
+    insert_bounded(
+        &mut snapshot.access_tokens,
+        access_token_lookup_key(&access_token),
+        OAuthAccessToken {
+            principal: principal.to_string(),
+            resource: resource.to_string(),
+            expires_at: access_expires_at,
+        },
+        state.config.oauth.max_access_tokens,
+        |value| value.expires_at,
+    );
+    insert_bounded(
+        &mut snapshot.refresh_tokens,
+        refresh_token_key(&refresh_token),
+        OAuthRefreshToken {
+            client_id: client_id.to_string(),
+            principal: principal.to_string(),
+            resource: resource.to_string(),
+            scope: scope.to_string(),
+            expires_at: now + state.config.oauth.refresh_token_ttl,
+        },
+        state.config.oauth.max_refresh_tokens,
+        |value| value.expires_at,
+    );
+    let snapshot = match state.persist_snapshot(snapshot).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return oauth_token_error(
+                "temporarily_unavailable",
+                &format!("failed to persist OAuth tokens: {error}"),
+            );
+        }
+    };
+    // Reads see only committed credentials. The mutation gate serializes replay checks.
+    *state.oauth_access_tokens.write().await = snapshot.access_tokens;
+    *state.oauth_refresh_tokens.write().await = snapshot.refresh_tokens;
+    if let Some(code) = consumed_code {
+        state.oauth_codes.write().await.remove(code);
     }
     oauth_json(
         StatusCode::OK,
@@ -521,7 +543,11 @@ async fn issue_oauth_tokens(
             "token_type": "Bearer",
             "expires_in": access_expires_at.saturating_sub(now),
             "refresh_token": refresh_token,
-            "scope": scope
+            "scope": scope,
+            // MCP clients use RFC 8707 Resource Indicators to bind the token
+            // to this resource server. Returning it also keeps the token
+            // response self-describing for clients that validate the audience.
+            "resource": resource
         }),
     )
 }

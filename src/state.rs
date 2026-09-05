@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     durable::{DurableSnapshot, DurableStore},
+    limits::ToolGate,
     util::token_fingerprint,
 };
 use reqwest::Client;
@@ -13,7 +14,7 @@ use std::{
 use tokio::{
     io::BufReader,
     process::{Child, ChildStdin, ChildStdout},
-    sync::{Mutex, OnceCell, RwLock, Semaphore},
+    sync::{Mutex, OnceCell, RwLock},
 };
 
 const ACCESS_TOKEN_FINGERPRINT_PREFIX: &str = "sha256:";
@@ -81,17 +82,18 @@ pub struct AppState {
     pub sessions: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
     pub oauth_codes: Arc<RwLock<HashMap<String, AuthorizationCode>>>,
     pub oauth_clients: Arc<RwLock<HashMap<String, OAuthClient>>>,
-    /// Fresh access tokens are keyed by plaintext only in memory. Persisted entries use a
-    /// `sha256:` fingerprint key so restarts preserve authorization without storing bearer
-    /// credentials that can be replayed from the state file.
+    /// Access tokens use SHA-256 fingerprint keys in memory and on disk.
     pub oauth_access_tokens: Arc<RwLock<HashMap<String, OAuthAccessToken>>>,
     /// Refresh tokens are keyed by SHA-256 fingerprint, never by plaintext token.
     pub oauth_refresh_tokens: Arc<RwLock<HashMap<String, OAuthRefreshToken>>>,
     pub failed_logins: Arc<Mutex<HashMap<String, VecDeque<u64>>>>,
-    pub shell_slots: Arc<Semaphore>,
-    pub browser_slots: Arc<Semaphore>,
+    pub shell_slots: ToolGate,
+    pub browser_slots: ToolGate,
+    pub backend_slots: ToolGate,
     pub node_path: Arc<OnceCell<Option<String>>>,
     pub browser_worker: Arc<Mutex<Option<BrowserWorker>>>,
+    /// Serializes durable mutations through both persistence and publication.
+    pub(crate) durable_mutations: Arc<Mutex<()>>,
     durable: Arc<DurableStore>,
 }
 
@@ -105,8 +107,8 @@ impl AppState {
             .tcp_nodelay(true)
             .build()
             .map_err(|error| format!("failed to build HTTP client: {error}"))?;
-        let shell_slots = Arc::new(Semaphore::new(config.process.shell_concurrency));
-        let browser_slots = Arc::new(Semaphore::new(config.process.browser_concurrency));
+        let shell_slots = ToolGate::new(config.process.shell_concurrency);
+        let browser_slots = ToolGate::new(config.process.browser_concurrency);
         let durable = Arc::new(DurableStore::new(config.state_file.clone()));
         let persisted = durable.load()?;
 
@@ -128,21 +130,37 @@ impl AppState {
             failed_logins: Default::default(),
             shell_slots,
             browser_slots,
+            backend_slots: ToolGate::new(4),
             node_path: Arc::new(OnceCell::new()),
             browser_worker: Default::default(),
+            durable_mutations: Default::default(),
             durable,
         })
     }
 
-    pub async fn remember_session(&self, principal: &str, session_id: &str) {
-        {
+    pub async fn remember_session(&self, principal: &str, session_id: &str) -> Result<(), String> {
+        let guard = self.durable_mutations.clone().lock_owned().await;
+        if self.config.state_file.is_none() {
             let mut sessions = self.sessions.write().await;
             let owned = sessions.entry(principal.to_string()).or_default();
             remember_bounded(owned, session_id, self.config.max_sessions_per_principal);
+            return Ok(());
         }
-        if let Err(error) = self.persist_durable().await {
-            tracing::warn!(%error, "failed to persist backend session ownership");
-        }
+        let state = self.clone();
+        let principal = principal.to_string();
+        let session_id = session_id.to_string();
+        // Once persistence starts, cancellation must not interrupt publication.
+        tokio::spawn(async move {
+            let _guard = guard;
+            let mut snapshot = state.durable_snapshot().await;
+            let owned = snapshot.sessions.entry(principal).or_default();
+            remember_bounded(owned, &session_id, state.config.max_sessions_per_principal);
+            let snapshot = state.persist_snapshot(snapshot).await?;
+            *state.sessions.write().await = snapshot.sessions;
+            Ok(())
+        })
+        .await
+        .map_err(|error| format!("session persistence task failed: {error}"))?
     }
 
     pub async fn owns_session(&self, principal: &str, session_id: &str) -> bool {
@@ -153,33 +171,30 @@ impl AppState {
             .is_some_and(|sessions| sessions.iter().any(|existing| existing == session_id))
     }
 
-    pub async fn persist_durable(&self) -> Result<(), String> {
-        let sessions = self.sessions.read().await.clone();
-        let access_tokens = self
-            .oauth_access_tokens
-            .read()
-            .await
-            .iter()
-            .map(|(key, token)| (durable_access_token_key(key), token.clone()))
-            .collect();
-        let refresh_tokens = self.oauth_refresh_tokens.read().await.clone();
-        let dcr_clients = self
-            .oauth_clients
-            .read()
-            .await
-            .iter()
-            .filter(|(_, client)| client.kind == OAuthClientKind::DynamicRegistration)
-            .map(|(id, client)| (id.clone(), client.clone()))
-            .collect();
-        self.durable
-            .save(DurableSnapshot {
-                version: 1,
-                access_tokens,
-                refresh_tokens,
-                sessions,
-                dcr_clients,
-            })
-            .await
+    /// Call while holding durable_mutations; prepare changes in this snapshot.
+    pub(crate) async fn durable_snapshot(&self) -> DurableSnapshot {
+        DurableSnapshot {
+            version: 1,
+            sessions: self.sessions.read().await.clone(),
+            access_tokens: self.oauth_access_tokens.read().await.clone(),
+            refresh_tokens: self.oauth_refresh_tokens.read().await.clone(),
+            dcr_clients: self
+                .oauth_clients
+                .read()
+                .await
+                .iter()
+                .filter(|(_, client)| client.kind == OAuthClientKind::DynamicRegistration)
+                .map(|(id, client)| (id.clone(), client.clone()))
+                .collect(),
+        }
+    }
+
+    /// Publish the changed maps only after this succeeds, with the mutation gate held.
+    pub(crate) async fn persist_snapshot(
+        &self,
+        snapshot: DurableSnapshot,
+    ) -> Result<DurableSnapshot, String> {
+        self.durable.save_owned(snapshot).await
     }
 }
 
@@ -188,14 +203,6 @@ pub(crate) fn access_token_lookup_key(token: &str) -> String {
         "{ACCESS_TOKEN_FINGERPRINT_PREFIX}{}",
         token_fingerprint(token)
     )
-}
-
-fn durable_access_token_key(key: &str) -> String {
-    if key.starts_with(ACCESS_TOKEN_FINGERPRINT_PREFIX) {
-        key.to_string()
-    } else {
-        access_token_lookup_key(key)
-    }
 }
 
 fn remember_bounded(owned: &mut VecDeque<String>, session_id: &str, limit: usize) {

@@ -37,6 +37,29 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: cargo test --locked --all-features -- --test-threads=1
+      - name: Windows PowerShell shell regressions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MCP_WINDOWS_SHELL: powershell
+        run: |
+          cargo test --locked --all-features --bin mcp-bridge process::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell process regressions failed' }
+          cargo test --locked --all-features --test regressions shell_failures_are_tool_errors -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell timeout regression failed' }
+      - name: Native macOS helper regressions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          /bin/bash -n scripts/install-user-service-macos.sh
+          /bin/bash -n scripts/start-browser.sh
+          /bin/bash -n scripts/bootstrap-oauth.sh
+          /bin/bash -n scripts/run-with-env.sh
+          /bin/bash tests/install_user_service_macos.sh
+          /bin/bash tests/start_browser.sh
+          /bin/bash tests/bootstrap_oauth.sh
+          /bin/bash tests/run_with_env.sh
+          /bin/bash tests/scan_secrets.sh
       - name: Install Playwright package on Unix
         if: runner.os != 'Windows'
         shell: bash
@@ -90,6 +113,9 @@ jobs:
         with:
           node-version: 22
       - run: bash -n scripts/scan-secrets.sh
+      - run: bash -n tests/scan_secrets.sh
+      - run: bash tests/scan_secrets.sh
+      - run: bash scripts/scan-secrets.sh --worktree
       - run: bash scripts/scan-secrets.sh
       - run: bash -n scripts/package-release.sh
       - run: bash -n scripts/deploy-user-service.sh
@@ -97,32 +123,10 @@ jobs:
       - run: bash -n scripts/run-with-env.sh
       - run: bash -n scripts/start-browser.sh
       - run: bash -n scripts/install-user-service-macos.sh
-      - name: Verify OAuth bootstrap helper
-        run: |
-          set -euo pipefail
-          test_home="$(mktemp -d)"
-          log_file="$(mktemp)"
-          HOME="$test_home" bash scripts/bootstrap-oauth.sh http://127.0.0.1:3000 >"$log_file"
-          env_file="$test_home/.config/mcp-bridge/env"
-          test "$(stat -c '%a' "$env_file")" = "600"
-          grep -qx 'MCP_OAUTH_USERNAME=admin' "$env_file"
-          grep -qx 'MCP_OAUTH_ALLOW_INSECURE_HTTP=true' "$env_file"
-          first_password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$env_file")"
-          test "${#first_password}" -ge 24
-          if grep -Fq "$first_password" "$log_file"; then
-            echo 'bootstrap password leaked to normal output' >&2
-            exit 1
-          fi
-          HOME="$test_home" bash scripts/bootstrap-oauth.sh http://127.0.0.1:3000 >"$log_file"
-          second_password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$env_file")"
-          test "$first_password" = "$second_password"
-          HOME="$test_home" bash scripts/bootstrap-oauth.sh --rotate http://127.0.0.1:3000 >"$log_file"
-          rotated_password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$env_file")"
-          test "$first_password" != "$rotated_password"
-          if grep -Fq "$rotated_password" "$log_file"; then
-            echo 'rotated password leaked to normal output' >&2
-            exit 1
-          fi
+      - run: bash tests/run_with_env.sh
+      - run: bash tests/install_user_service_macos.sh
+      - run: bash tests/bootstrap_oauth.sh
+      - run: bash tests/start_browser.sh
 
   windows-script-validation:
     runs-on: windows-latest
@@ -137,7 +141,8 @@ jobs:
             'scripts/bootstrap-oauth.ps1',
             'scripts/run-with-env.ps1',
             'scripts/start-browser.ps1',
-            'scripts/install-user-service-windows.ps1'
+            'scripts/install-user-service-windows.ps1',
+            'tests/windows_helpers.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -153,7 +158,8 @@ jobs:
             'scripts/bootstrap-oauth.ps1',
             'scripts/run-with-env.ps1',
             'scripts/start-browser.ps1',
-            'scripts/install-user-service-windows.ps1'
+            'scripts/install-user-service-windows.ps1',
+            'tests/windows_helpers.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -168,25 +174,12 @@ jobs:
           if (($ps | Out-String).Trim() -ne 'MCP_PS_OK') { throw 'Windows PowerShell invocation failed' }
           $cmd = & cmd.exe /d /s /c "echo MCP_CMD_OK"
           if (($cmd | Out-String).Trim() -ne 'MCP_CMD_OK') { throw 'CMD invocation failed' }
-      - name: Verify Windows OAuth bootstrap helper on PowerShell 5.1
+      - name: Windows helper regressions on PowerShell 5.1
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'mcp-oauth-test'
-          New-Item -ItemType Directory -Path $root -Force | Out-Null
-          $env:MCP_BRIDGE_ENV_FILE = Join-Path $root 'env'
-          $log = Join-Path $root 'bootstrap.log'
-          .\scripts\bootstrap-oauth.ps1 'http://127.0.0.1:3000' *> $log
-          $first = (Get-Content $env:MCP_BRIDGE_ENV_FILE | Where-Object { $_ -like 'MCP_OAUTH_PASSWORD=*' } | Select-Object -Last 1).Substring('MCP_OAUTH_PASSWORD='.Length)
-          if ($first.Length -lt 24) { throw 'generated password is too short' }
-          if ((Get-Content $log -Raw).Contains($first)) { throw 'bootstrap password leaked to normal output' }
-          .\scripts\bootstrap-oauth.ps1 'http://127.0.0.1:3000' *> $log
-          $second = (Get-Content $env:MCP_BRIDGE_ENV_FILE | Where-Object { $_ -like 'MCP_OAUTH_PASSWORD=*' } | Select-Object -Last 1).Substring('MCP_OAUTH_PASSWORD='.Length)
-          if ($first -ne $second) { throw 'normal bootstrap unexpectedly rotated password' }
-          .\scripts\bootstrap-oauth.ps1 -Rotate 'http://127.0.0.1:3000' *> $log
-          $rotated = (Get-Content $env:MCP_BRIDGE_ENV_FILE | Where-Object { $_ -like 'MCP_OAUTH_PASSWORD=*' } | Select-Object -Last 1).Substring('MCP_OAUTH_PASSWORD='.Length)
-          if ($first -eq $rotated) { throw 'rotate did not change password' }
-          if ((Get-Content $log -Raw).Contains($rotated)) { throw 'rotated password leaked to normal output' }
+        run: .\tests\windows_helpers.ps1
+      - name: Windows helper regressions on PowerShell 7
+        shell: pwsh
+        run: .\tests\windows_helpers.ps1
 
   audit:
     runs-on: ubuntu-latest

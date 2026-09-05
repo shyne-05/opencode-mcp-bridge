@@ -8,3 +8,6 @@
 *.pfx
 
 .mcp-bridge-state.json
+
+# Crash leftovers from atomic OAuth-state replacement.
+.mcp-bridge-state.tmp-*

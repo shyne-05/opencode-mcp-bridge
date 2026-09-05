@@ -21,20 +21,20 @@ if (-not $env:HOME -and $env:USERPROFILE) {
     $env:HOME = $env:USERPROFILE
 }
 
-if (Test-Path $EnvFile) {
-    foreach ($line in Get-Content $EnvFile) {
+if (Test-Path -LiteralPath $EnvFile) {
+    foreach ($line in Get-Content -LiteralPath $EnvFile -Encoding UTF8) {
         if ([string]::IsNullOrWhiteSpace($line) -or $line.TrimStart().StartsWith('#')) { continue }
         $index = $line.IndexOf('=')
         if ($index -le 0) { throw "invalid environment entry in $EnvFile" }
         $name = $line.Substring(0, $index)
         $value = $line.Substring($index + 1)
-        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { throw "invalid environment variable name in ${EnvFile}: $name" }
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { throw "invalid environment variable name in $EnvFile" }
         [Environment]::SetEnvironmentVariable($name, $value, 'Process')
     }
 }
 
 $Binary = Join-Path $Root 'target\release\mcp-bridge.exe'
-if (-not (Test-Path $Binary)) { throw "bridge binary not found: $Binary" }
-Set-Location $Root
+if (-not (Test-Path -LiteralPath $Binary)) { throw "bridge binary not found: $Binary" }
+Set-Location -LiteralPath $Root
 & $Binary
 exit $LASTEXITCODE

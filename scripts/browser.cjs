@@ -1,5 +1,6 @@
 const HELPER_PROTOCOL = "mcp-browser-helper/2";
 const CDP_ENDPOINT = "http://127.0.0.1:9222";
+const MAX_RESULT_CHARS = 15000;
 
 const action = process.argv[2];
 if (action === "version") {
@@ -11,6 +12,8 @@ const { chromium } = require("playwright");
 const readline = require("node:readline");
 
 let browserPromise = null;
+// Target IDs stay stable across navigation; weak keys release closed pages.
+const pageTargetIds = new WeakMap();
 
 async function browserInstance() {
   if (browserPromise) {
@@ -33,13 +36,18 @@ async function browserContext() {
 }
 
 async function pageTargetId(page) {
+  const cached = pageTargetIds.get(page);
+  if (cached) return cached;
   const session = await page.context().newCDPSession(page);
+  let targetId;
   try {
     const { targetInfo } = await session.send("Target.getTargetInfo");
-    return targetInfo.targetId;
+    targetId = targetInfo.targetId;
   } finally {
     await session.detach();
   }
+  pageTargetIds.set(page, targetId);
+  return targetId;
 }
 
 async function selectPage(context, requestedTargetId) {
@@ -79,7 +87,7 @@ async function performAction(requestedAction, targetId, args) {
     const snapshot = typeof body.ariaSnapshot === "function"
       ? await body.ariaSnapshot({ timeout: 10000 })
       : await body.innerText({ timeout: 10000 });
-    return String(snapshot).slice(0, 15000);
+    return String(snapshot).slice(0, MAX_RESULT_CHARS);
   }
   if (requestedAction === "navigate") {
     const url = args[0];
@@ -117,6 +125,9 @@ async function serve() {
     let request;
     try {
       request = JSON.parse(line);
+      if (request === null || typeof request !== "object" || Array.isArray(request)) {
+        throw new Error("request must be a JSON object");
+      }
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ id: null, ok: false, error: `invalid worker request: ${error.message}` })}\n`);
       continue;
@@ -129,9 +140,9 @@ async function serve() {
         typeof request.targetId === "string" ? request.targetId : "",
         Array.isArray(request.args) ? request.args.map(String) : [],
       );
-      process.stdout.write(`${JSON.stringify({ id, ok: true, result })}\n`);
+      process.stdout.write(`${JSON.stringify({ id, ok: true, result: String(result).slice(0, MAX_RESULT_CHARS) })}\n`);
     } catch (error) {
-      process.stdout.write(`${JSON.stringify({ id, ok: false, error: error.message })}\n`);
+      process.stdout.write(`${JSON.stringify({ id, ok: false, error: String(error?.message ?? error).slice(0, MAX_RESULT_CHARS) })}\n`);
     }
   }
 }

@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const STATE_VERSION: u32 = 1;
 const ACCESS_TOKEN_FINGERPRINT_PREFIX: &str = "sha256:";
@@ -35,14 +36,14 @@ fn state_version() -> u32 {
 #[derive(Debug)]
 pub struct DurableStore {
     path: Option<PathBuf>,
-    write_lock: Mutex<()>,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl DurableStore {
     pub fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
-            write_lock: Mutex::new(()),
+            write_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -84,16 +85,31 @@ impl DurableStore {
         Ok(state)
     }
 
-    pub async fn save(&self, mut snapshot: DurableSnapshot) -> Result<(), String> {
+    /// Callers serialize preparation through publication with their mutation gate.
+    /// Return the saved snapshot so publication needs no second full-state clone.
+    pub async fn save_owned(&self, snapshot: DurableSnapshot) -> Result<DurableSnapshot, String> {
         let Some(path) = self.path.clone() else {
-            return Ok(());
+            return Ok(snapshot);
         };
-        snapshot.version = STATE_VERSION;
-        let _guard = self.write_lock.lock().await;
-        tokio::task::spawn_blocking(move || write_atomic(&path, &snapshot))
-            .await
-            .map_err(|error| format!("durable-state writer task failed: {error}"))?
+        let guard = self.write_lock.clone().lock_owned().await;
+        write_snapshot(path, guard, snapshot).await
     }
+}
+
+async fn write_snapshot(
+    path: PathBuf,
+    guard: OwnedMutexGuard<()>,
+    mut snapshot: DurableSnapshot,
+) -> Result<DurableSnapshot, String> {
+    snapshot.version = STATE_VERSION;
+    tokio::task::spawn_blocking(move || {
+        // Keep writer ownership until file replacement finishes, even on cancellation.
+        let _guard = guard;
+        write_atomic(&path, &snapshot)?;
+        Ok(snapshot)
+    })
+    .await
+    .map_err(|error| format!("durable-state writer task failed: {error}"))?
 }
 
 fn write_atomic(path: &Path, snapshot: &DurableSnapshot) -> Result<(), String> {
@@ -119,8 +135,6 @@ fn write_atomic(path: &Path, snapshot: &DurableSnapshot) -> Result<(), String> {
         }
     }
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let bytes = serde_json::to_vec(snapshot)
-        .map_err(|error| format!("failed to encode durable state: {error}"))?;
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
@@ -128,64 +142,40 @@ fn write_atomic(path: &Path, snapshot: &DurableSnapshot) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&tmp).map_err(|error| {
+    let file = options.open(&tmp).map_err(|error| {
         format!(
             "failed to create durable state '{}': {error}",
             tmp.display()
         )
     })?;
-    file.write_all(&bytes)
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, snapshot).map_err(|error| {
+        format!(
+            "failed to encode durable state '{}': {error}",
+            tmp.display()
+        )
+    })?;
+    writer
+        .flush()
         .map_err(|error| format!("failed to write durable state '{}': {error}", tmp.display()))?;
-    file.sync_all()
+    writer
+        .get_ref()
+        .sync_all()
         .map_err(|error| format!("failed to sync durable state '{}': {error}", tmp.display()))?;
+    drop(writer);
     replace_state_file(&tmp, path)?;
     Ok(())
 }
 
-#[cfg(not(windows))]
 fn replace_state_file(tmp: &Path, path: &Path) -> Result<(), String> {
+    // Rust's rename replaces existing files on Unix and Windows. Keep the old
+    // snapshot in place until the replacement succeeds, without a backup gap.
     fs::rename(tmp, path).map_err(|error| {
         format!(
             "failed to atomically replace durable state '{}': {error}",
             path.display()
         )
     })
-}
-
-#[cfg(windows)]
-fn replace_state_file(tmp: &Path, path: &Path) -> Result<(), String> {
-    // std::fs::rename does not replace an existing destination on Windows.
-    // Rotate the previous file out of the way first and restore it if the
-    // second rename fails. DurableStore serializes writers, so a single
-    // process cannot race this transaction with itself.
-    let backup = path.with_extension(format!("replace-old-{}", std::process::id()));
-    let _ = fs::remove_file(&backup);
-    let had_previous = path.exists();
-    if had_previous {
-        fs::rename(path, &backup).map_err(|error| {
-            format!(
-                "failed to prepare durable state replacement '{}': {error}",
-                path.display()
-            )
-        })?;
-    }
-    match fs::rename(tmp, path) {
-        Ok(()) => {
-            if had_previous {
-                let _ = fs::remove_file(&backup);
-            }
-            Ok(())
-        }
-        Err(error) => {
-            if had_previous {
-                let _ = fs::rename(&backup, path);
-            }
-            Err(format!(
-                "failed to replace durable state '{}': {error}",
-                path.display()
-            ))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -222,7 +212,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("state.json");
         let store = DurableStore::new(Some(path.clone()));
-        store.save(snapshot("user")).await.unwrap();
+        store.save_owned(snapshot("user")).await.unwrap();
         let raw = fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("mcp_access_"));
         assert!(!raw.contains("mcp_refresh_"));
@@ -252,8 +242,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("state.json");
         let store = DurableStore::new(Some(path));
-        store.save(snapshot("first")).await.unwrap();
-        store.save(snapshot("second")).await.unwrap();
+        store.save_owned(snapshot("first")).await.unwrap();
+        store.save_owned(snapshot("second")).await.unwrap();
         let loaded = store.load().unwrap();
         assert_eq!(
             loaded
@@ -262,5 +252,109 @@ mod tests {
                 .map(|token| token.principal.as_str()),
             Some("second")
         );
+    }
+
+    #[test]
+    fn failed_replacement_keeps_previous_snapshot() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("trạng thái [bridge].json");
+        let missing = dir.path().join("missing.json");
+        fs::write(&path, b"previous snapshot").unwrap();
+
+        assert!(replace_state_file(&missing, &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"previous snapshot");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn replacement_does_not_move_existing_directory() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let tmp = dir.path().join("new-state.json");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("keep.txt"), b"existing content").unwrap();
+        fs::write(&tmp, b"new snapshot").unwrap();
+
+        assert!(replace_state_file(&tmp, &path).is_err());
+        assert!(path.is_dir());
+        assert_eq!(
+            fs::read(path.join("keep.txt")).unwrap(),
+            b"existing content"
+        );
+        assert_eq!(fs::read(&tmp).unwrap(), b"new snapshot");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn memory_only_store_returns_the_owned_snapshot_without_waiting_for_a_writer() {
+        let store = DurableStore::new(None);
+        let _held = store.write_lock.lock().await;
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            store.save_owned(snapshot("memory-only")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            snapshot.access_tokens["sha256:hashed-access-token-key"].principal,
+            "memory-only"
+        );
+    }
+
+    #[test]
+    fn cancelled_save_keeps_writer_lock_until_blocking_write_finishes() {
+        use tokio::{
+            runtime::Builder,
+            sync::oneshot,
+            time::{Duration, timeout},
+        };
+
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let dir = tempdir().unwrap();
+            let store = Arc::new(DurableStore::new(Some(dir.path().join("state.json"))));
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                ready_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            ready_rx.await.unwrap();
+
+            let writing_store = store.clone();
+            let saving = tokio::spawn(async move {
+                writing_store
+                    .save_owned(snapshot("cancelled-request"))
+                    .await
+            });
+            timeout(Duration::from_secs(2), async {
+                while store.write_lock.try_lock().is_ok() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            saving.abort();
+            assert!(saving.await.unwrap_err().is_cancelled());
+            // The queued spawn_blocking writer still owns the lock even though
+            // its request future is gone, preventing simultaneous replacements.
+            assert!(store.write_lock.try_lock().is_err());
+            release_tx.send(()).unwrap();
+            blocker.await.unwrap();
+            let finished = timeout(Duration::from_secs(5), store.write_lock.lock())
+                .await
+                .unwrap();
+            drop(finished);
+            assert_eq!(
+                store.load().unwrap().access_tokens["sha256:hashed-access-token-key"].principal,
+                "cancelled-request"
+            );
+        });
     }
 }

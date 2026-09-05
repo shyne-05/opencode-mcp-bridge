@@ -6,12 +6,14 @@ MCP Bridge keeps the public MCP surface deliberately stable while optimizing the
 
 - RMCP Streamable HTTP remains the transport. The bridge returns JSON responses for ordinary tool calls and does not add a parallel proprietary WebSocket protocol.
 - The shared Reqwest client keeps backend/CDP HTTP connections warm, enables TCP_NODELAY, and maintains a larger idle connection pool.
+- Immutable MCP tool schemas are shared across requests. Search results reuse path checks, and browser actions reuse resolved page target IDs.
+- Shell, browser, and backend queues admit bounded work and reject waiting calls after five seconds. Backend tools share four running slots; health checks use a separate three-second deadline.
 - Browser `navigate`, `snapshot`, `click`, `fill`, and `evaluate` calls use a persistent Node/Playwright worker. Playwright and the CDP browser connection are reused across calls instead of being loaded and reconnected for every action.
 - The browser worker is prewarmed in the background when browser support is enabled. Loading Node/Playwright is therefore moved out of the first user browser action; Chrome/CDP itself may still connect lazily if Chrome was not available at service startup.
 - Browser `tabs`, `new`, and `close` continue to use the Chrome DevTools HTTP endpoints directly because those operations are already lightweight.
 - A dead, timed-out, or protocol-desynchronized browser worker is discarded. The next browser action creates a clean worker instead of reusing uncertain state.
 - Browser helper CLI compatibility (`version` and one-shot action mode) remains available for packaging and mixed-version diagnostics.
-- Shell commands continue to start in isolated Bash processes with a sanitized environment. A persistent interactive shell is intentionally avoided because it would leak cwd/environment/process state between independent MCP calls.
+- Shell commands start in separate processes with a sanitized environment: Bash on Linux, zsh on macOS, and CMD or the explicitly selected PowerShell mode on Windows. A persistent interactive shell is intentionally avoided because it would leak cwd/environment/process state between independent MCP calls.
 - After a shell exits, stdout/stderr receive only a short drain grace. A detached background application can no longer keep an MCP call open indefinitely merely because it inherited the shell pipes; any output captured before the grace expires is retained and the stream is marked truncated/open.
 - Structured latency events are emitted under the `mcp_bridge::latency` tracing target for total MCP tool latency and shell/browser queue/execution latency.
 
@@ -31,9 +33,9 @@ Long-running work should be expressed through the existing tools until a future 
 
 ## Measurement
 
-Run the service with a tracing filter that includes `mcp_bridge::latency`, for example:
+Set `RUST_LOG` in the bridge process environment or service configuration file to include the latency target:
 
-```bash
+```text
 RUST_LOG=info,mcp_bridge::latency=info
 ```
 

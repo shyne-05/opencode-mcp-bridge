@@ -6,19 +6,28 @@ For an easy first-run experience, the repository includes a local bootstrap help
 
 ## First setup
 
-Run from the repository root:
+Run from the repository root.
+
+Linux/macOS:
 
 ```bash
 bash scripts/bootstrap-oauth.sh https://your-domain.example.com
 ```
 
-The helper updates the native user-service environment file at:
+Windows PowerShell:
 
-```text
-~/.config/mcp-bridge/env
+```powershell
+.\scripts\bootstrap-oauth.ps1 https://your-domain.example.com
 ```
 
-The directory is restricted to the owner and the file is written with mode `600`.
+The default environment file is user-specific:
+
+| Platform | Configuration file |
+| --- | --- |
+| Linux/macOS | `~/.config/mcp-bridge/env` |
+| Windows | the current user's `LocalApplicationData\mcp-bridge\env` |
+
+Set `MCP_BRIDGE_ENV_FILE` before running the helper to select another file. Linux/macOS restrict the directory to its owner and write the file with mode `600`; on Windows, keep the selected directory protected by the user's file permissions.
 
 The resulting OAuth values are equivalent to:
 
@@ -47,7 +56,13 @@ MCP_OAUTH_PASSWORD=YOUR_PASSWORD_HERE
 When you need to enter the OAuth login on this machine:
 
 ```bash
+# Linux/macOS
 bash scripts/bootstrap-oauth.sh --show
+```
+
+```powershell
+# Windows
+.\scripts\bootstrap-oauth.ps1 -Show
 ```
 
 This intentionally reveals the username/password only in the local terminal. Treat the output as a credential and do not paste it into issues, logs, screenshots, or commits.
@@ -55,15 +70,20 @@ This intentionally reveals the username/password only in the local terminal. Tre
 ## Rotate the password
 
 ```bash
+# Linux/macOS
 bash scripts/bootstrap-oauth.sh --rotate https://your-domain.example.com
-systemctl --user restart mcp-bridge.service
 ```
 
-After rotation, existing OAuth clients may need to reconnect if their authorization can no longer be refreshed.
+```powershell
+# Windows
+.\scripts\bootstrap-oauth.ps1 -Rotate https://your-domain.example.com
+```
+
+Restart the installed bridge service or task when ready to load the new login password. Changing the login password does not revoke already issued OAuth tokens.
 
 ## Existing password behavior
 
-Running the normal bootstrap command again preserves an existing `MCP_OAUTH_PASSWORD` entry. Use `--rotate` when you explicitly want a new password.
+Running the normal bootstrap command again preserves an existing nonblank `MCP_OAUTH_PASSWORD`. An empty or whitespace-only entry is replaced with a generated password. Use `--rotate` when you explicitly want a new password.
 
 ## Custom username
 
@@ -74,6 +94,13 @@ MCP_OAUTH_USERNAME=my-user \
   bash scripts/bootstrap-oauth.sh https://your-domain.example.com
 ```
 
+Windows PowerShell:
+
+```powershell
+$env:MCP_OAUTH_USERNAME = 'my-user'
+.\scripts\bootstrap-oauth.ps1 https://your-domain.example.com
+```
+
 ## Loopback development
 
 For local OAuth testing only, loopback HTTP is accepted by the helper:
@@ -82,12 +109,12 @@ For local OAuth testing only, loopback HTTP is accepted by the helper:
 bash scripts/bootstrap-oauth.sh http://127.0.0.1:3000
 ```
 
-The helper adds `MCP_OAUTH_ALLOW_INSECURE_HTTP=true` only for that loopback HTTP configuration. Public deployments should use HTTPS.
+On Windows, pass the same origin to `scripts/bootstrap-oauth.ps1`. The helpers accept `localhost`, `127.0.0.1`, and `::1` for HTTP testing and add `MCP_OAUTH_ALLOW_INSECURE_HTTP=true` only for those loopback origins. Public deployments should use HTTPS.
 
 ## Security rules
 
 - Never add a real `MCP_OAUTH_PASSWORD`, `MCP_TOKEN`, API key, cookie, tunnel token, private key, or credential file to Git.
-- Keep `~/.config/mcp-bridge/env` private to the bridge account.
+- Keep the selected environment file private to the bridge account.
 - Use a separate credential per installation.
 - Rotate credentials if they are accidentally shared.
 - Keep the MCP bridge behind authenticated HTTPS when it is reachable remotely.

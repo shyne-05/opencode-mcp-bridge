@@ -26,7 +26,7 @@ The primary security boundary is therefore **authentication + deployment trust**
 - Dynamic Client Registration is available only as a backwards-compatible fallback and is rate-limited/bounded.
 - Authorization codes are short-lived, process-local, and bounded. Unexpired access-token metadata, refresh-token metadata, and DCR registrations are durable across normal restarts so an active OAuth authorization is not discarded merely because the bridge process restarts.
 - Access-token and refresh-token values are never persisted in plaintext. Durable token records use SHA-256 fingerprints as lookup keys and restrictive atomic state-file writes.
-- Refresh tokens rotate; a consumed refresh token cannot be reused.
+- Refresh tokens rotate; a consumed refresh token cannot be reused. Token exchanges persist their result before consuming the old credential, so a failed state-file write leaves the exchange retryable.
 - OAuth login throttling combines source-IP, username-fingerprint, and global buckets. Forwarded IP headers are ignored unless `MCP_TRUST_PROXY=cloudflare` is explicitly enabled and the actual TCP peer is a loopback proxy.
 - Token/password comparisons avoid ordinary early-exit string comparison.
 
@@ -36,8 +36,8 @@ The primary security boundary is therefore **authentication + deployment trust**
 - MCP/HTTP request bodies are capped before Streamable HTTP/RMCP parsing and oversized requests return HTTP 413.
 - `/live` reports process liveness; `/ready` and `/health` report backend readiness and return HTTP 503 when unavailable.
 - The root endpoint exposes version/build/helper-protocol provenance to make mixed-version deployments observable.
-- The native user-service deployment helper requires a clean `main`, safely fast-forwards it to `origin/main`, builds the release package, restarts the service, and verifies process identity, health, readiness, build commit, `dirty=false`, and browser-helper protocol.
-- The native deployment helper captures the running executable/helper outside the repository before packaging, and restores them if restart or verification fails. When deployment is initiated from the bridge process itself, it hands restart work to a transient user-systemd unit before restarting `mcp-bridge.service`, preventing the service from killing the process that still needs to complete deployment verification.
+- The Linux guarded user-service deployment helper requires a clean `main`, safely fast-forwards it to `origin/main`, builds the release package, restarts the service, and verifies process identity, health, readiness, build commit, `dirty=false`, and browser-helper protocol.
+- The Linux guarded deployment helper captures the running executable/helper outside the repository before packaging, and restores them if restart or verification fails. When deployment is initiated from the bridge process itself, it hands restart work to a transient user-systemd unit before restarting `mcp-bridge.service`, preventing the service from killing the process that still needs to complete deployment verification.
 
 ### Durable state
 
@@ -49,8 +49,8 @@ By default durable state is stored under the user's XDG state directory (or `~/.
 - A small runtime/desktop environment allowlist is reconstructed explicitly.
 - Secret-looking environment variable names cannot be added through `MCP_CHILD_ENV_ALLOW`.
 - Captured stdout/stderr is bounded while streaming.
-- Tool-specific semaphores limit concurrent shell/browser work.
-- On Unix, spawned commands run in a separate process group and timed-out process groups are terminated.
+- Shell, browser, and backend work have bounded running and waiting capacity. Queued calls expire after five seconds; backend health checks remain independent.
+- On Unix, spawned commands run in a separate process group; timeout and cancellation cleanup terminates that group.
 
 These controls reduce accidental credential leakage and denial-of-service risk. They do **not** constrain what an explicitly enabled unrestricted shell command can do using the host account's normal permissions.
 
@@ -67,6 +67,7 @@ These controls reduce accidental credential leakage and denial-of-service risk. 
 - Chrome CDP is expected on loopback (`127.0.0.1:9222`).
 - Browser URLs are limited to `http://`, `https://`, and `about:blank`.
 - The helper does not call `browser.close()` on a user-owned CDP browser. Helper protocol compatibility is checked before scripted actions, and nonexistent close targets fail explicitly.
+- Browser HTTP bodies are capped at 1 MiB, and each action has one deadline covering startup and execution. Cancelled or invalid workers are discarded before another call can use them.
 - Browser cookies/page data remain sensitive because browser control is intentionally powerful.
 
 ## Deployment guidance
@@ -119,3 +120,5 @@ Never commit:
 - private keys
 
 Prefer a service manager or secret manager over storing secrets in repository files.
+
+Before committing, run `bash scripts/scan-secrets.sh --worktree`, stage the intended files, then run `bash scripts/scan-secrets.sh --staged`. The staged check reads the exact Git index; the worktree check also covers new, nonignored files. The default command scans committed history. Reports identify files without printing credential values.

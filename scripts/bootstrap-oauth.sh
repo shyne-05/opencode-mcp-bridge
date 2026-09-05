@@ -45,15 +45,25 @@ case "${1:-}" in
     ;;
 esac
 
+# Read literal assignments without evaluating shell text. Both service runners
+# accept CRLF files, and the last assignment wins even when it is empty.
+read_env_value() {
+  awk -v key="$1" '
+    { sub(/\r$/, "") }
+    index($0, key "=") == 1 { value = substr($0, length(key) + 2) }
+    END { printf "%s", value }
+  ' "$ENV_FILE"
+}
+
 show_credentials() {
   if [[ ! -f "$ENV_FILE" ]]; then
     printf 'OAuth environment file does not exist: %s\n' "$ENV_FILE" >&2
     exit 1
   fi
   local username password
-  username="$(sed -n 's/^MCP_OAUTH_USERNAME=//p' "$ENV_FILE" | tail -n 1)"
-  password="$(sed -n 's/^MCP_OAUTH_PASSWORD=//p' "$ENV_FILE" | tail -n 1)"
-  if [[ -z "$username" || -z "$password" ]]; then
+  username="$(read_env_value MCP_OAUTH_USERNAME)"
+  password="$(read_env_value MCP_OAUTH_PASSWORD)"
+  if [[ ! "$username" =~ [^[:space:]] || ! "$password" =~ [^[:space:]] ]]; then
     printf 'OAuth credentials are incomplete in %s\n' "$ENV_FILE" >&2
     exit 1
   fi
@@ -71,9 +81,17 @@ if [[ -z "$PUBLIC_URL" ]]; then
   exit 2
 fi
 
-if [[ ! "$PUBLIC_URL" =~ ^https://[^/]+(:[0-9]+)?$ ]] \
-  && [[ ! "$PUBLIC_URL" =~ ^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]]; then
-  printf 'Invalid public origin: %s\nUse an HTTPS origin without a path, or loopback HTTP for local testing.\n' "$PUBLIC_URL" >&2
+# Store regexes in variables for Bash 3.2 (the macOS system Bash). Exclude
+# delimiters and control characters before writing a value as one assignment.
+https_origin='^https://(\[[0-9a-fA-F:.]+\]|[^][/?:#@\\[:space:][:cntrl:]]+)(:[0-9]+)?$'
+http_origin='^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$'
+if [[ ! "$PUBLIC_URL" =~ $https_origin && ! "$PUBLIC_URL" =~ $http_origin ]]; then
+  printf 'Invalid public origin. Use an HTTPS origin without a path, query, fragment, or userinfo, or loopback HTTP for local testing.\n' >&2
+  exit 2
+fi
+
+if [[ ! "$USERNAME" =~ [^[:space:]] || "$USERNAME" =~ [[:cntrl:]] ]]; then
+  printf 'OAuth username must contain non-whitespace text and no control characters.\n' >&2
   exit 2
 fi
 
@@ -81,25 +99,23 @@ ENV_DIR="$(dirname "$ENV_FILE")"
 mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR" 2>/dev/null || true
 
-existing_password_line=""
+password=""
 if [[ -f "$ENV_FILE" && "$MODE" != "rotate" ]]; then
-  existing_password_line="$(grep -E '^MCP_OAUTH_PASSWORD=' "$ENV_FILE" | tail -n 1 || true)"
+  password="$(read_env_value MCP_OAUTH_PASSWORD)"
 fi
 
-if [[ -n "$existing_password_line" ]]; then
-  password_line="$existing_password_line"
-else
+if [[ ! "$password" =~ [^[:space:]] ]]; then
   if command -v openssl >/dev/null 2>&1; then
     password="$(openssl rand -hex 24)"
   else
     password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
   fi
-  if [[ ${#password} -lt 24 ]]; then
+  if [[ ! "$password" =~ ^[[:xdigit:]]{48}$ ]]; then
     printf 'Failed to generate a sufficiently strong OAuth password.\n' >&2
     exit 1
   fi
-  password_line="MCP_OAUTH_PASSWORD=$password"
 fi
+password_line="MCP_OAUTH_PASSWORD=$password"
 
 TMP_FILE="$(mktemp "$ENV_DIR/.env.tmp.XXXXXX")"
 cleanup() {
@@ -108,7 +124,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -f "$ENV_FILE" ]]; then
-  awk '!/^(MCP_PUBLIC_URL|MCP_OAUTH_USERNAME|MCP_OAUTH_PASSWORD|MCP_OAUTH_ALLOW_INSECURE_HTTP)=/' "$ENV_FILE" > "$TMP_FILE"
+  awk '{ sub(/\r$/, "") } !/^(MCP_PUBLIC_URL|MCP_OAUTH_USERNAME|MCP_OAUTH_PASSWORD|MCP_OAUTH_ALLOW_INSECURE_HTTP)=/' "$ENV_FILE" > "$TMP_FILE"
 fi
 
 {

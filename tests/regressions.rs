@@ -172,14 +172,29 @@ async fn shell_failures_are_tool_errors() {
     )
     .await;
     assert_eq!(nonzero["result"]["isError"], true);
+    #[cfg(windows)]
+    let timeout_command = if std::env::var("MCP_WINDOWS_SHELL")
+        .is_ok_and(|value| value.trim().eq_ignore_ascii_case("powershell"))
+    {
+        "Start-Sleep -Seconds 30"
+    } else {
+        "ping 127.0.0.1 -n 31 >nul"
+    };
+    #[cfg(not(windows))]
+    let timeout_command = "sleep 2";
     let (_, timeout) = tool_call(
         &bridge.base_url,
         TOKEN,
         "shell",
-        json!({"command":"sleep 2"}),
+        json!({"command":timeout_command}),
     )
     .await;
     assert_eq!(timeout["result"]["isError"], true);
+    assert!(
+        tool_text(&timeout).contains("timed_out:true"),
+        "a missing executable must not masquerade as a timeout: {}",
+        tool_text(&timeout),
+    );
 }
 
 async fn spawn_fake_backend(

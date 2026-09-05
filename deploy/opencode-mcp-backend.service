@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenCode local backend for MCP Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4097
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

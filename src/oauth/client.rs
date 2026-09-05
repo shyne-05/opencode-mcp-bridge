@@ -118,16 +118,27 @@ pub(super) async fn resolve_oauth_client(
     }
 
     let now = now_seconds();
-    {
+    let expired = {
         let clients = state.oauth_clients.read().await;
-        if let Some(client) = clients
-            .get(client_id)
-            .filter(|client| client.expires_at > now)
-        {
-            return Ok(client.clone());
+        match clients.get(client_id) {
+            Some(client) if client.expires_at > now => return Ok(client.clone()),
+            Some(_) => true,
+            None => false,
+        }
+    };
+    if expired {
+        let mut clients = state.oauth_clients.write().await;
+        // A concurrent resolver may have refreshed the entry while we acquired this lock.
+        if let Some(client) = clients.get(client_id) {
+            if client.expires_at > now {
+                return Ok(client.clone());
+            }
+            if client.kind == OAuthClientKind::DynamicRegistration {
+                return Err("dynamically registered client has expired".to_string());
+            }
+            clients.remove(client_id);
         }
     }
-    state.oauth_clients.write().await.remove(client_id);
 
     let metadata_url = validate_client_metadata_url(client_id)?;
     let (client, cacheable) = fetch_client_metadata(state, &metadata_url).await?;
@@ -231,7 +242,8 @@ async fn fetch_client_metadata(
         response.headers(),
         state.config.oauth.client_metadata_cache_ttl,
     );
-    let mut body = Vec::new();
+    let capacity = response.content_length().unwrap_or_default() as usize;
+    let mut body = Vec::with_capacity(capacity);
     while let Some(chunk) = response
         .chunk()
         .await
@@ -316,28 +328,27 @@ pub(super) fn validate_client_metadata_document(
 }
 
 pub(super) fn client_metadata_cache_ttl(headers: &HeaderMap, default_ttl: u64) -> u64 {
-    let Some(value) = headers
-        .get(header::CACHE_CONTROL)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return default_ttl;
-    };
-    let directives = value.split(',').map(str::trim).collect::<Vec<_>>();
-    if directives
-        .iter()
-        .any(|directive| directive.eq_ignore_ascii_case("no-store"))
-    {
-        return 0;
+    let mut ttl = default_ttl;
+    for value in headers.get_all(header::CACHE_CONTROL) {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        for directive in value.split(',').map(str::trim) {
+            let (name, value) = directive.split_once('=').unwrap_or((directive, ""));
+            if name.trim().eq_ignore_ascii_case("no-store")
+                || name.trim().eq_ignore_ascii_case("no-cache")
+            {
+                // There is no conditional revalidation, so no-cache requires a fresh fetch.
+                return 0;
+            }
+            if name.trim().eq_ignore_ascii_case("max-age")
+                && let Ok(max_age) = value.trim().trim_matches('"').parse::<u64>()
+            {
+                ttl = ttl.min(max_age);
+            }
+        }
     }
-    directives
-        .iter()
-        .find_map(|directive| {
-            directive
-                .strip_prefix("max-age=")
-                .and_then(|value| value.trim_matches('"').parse::<u64>().ok())
-        })
-        .map(|ttl| ttl.min(default_ttl))
-        .unwrap_or(default_ttl)
+    ttl
 }
 
 pub(super) fn client_allows_redirect(client: &OAuthClient, redirect_uri: &str) -> bool {
